@@ -9,6 +9,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'background_service.dart';
 
 final FlutterLocalNotificationsPlugin _notifPlugin =
@@ -275,19 +276,48 @@ class _AppRootState extends State<AppRoot> {
     super.dispose();
   }
 
-  Future<bool> _requestCameraPermissionIfNeeded() async {
-    try {
-      final hasPermission =
-          await _permChannel.invokeMethod<bool>('checkPermissions') ?? false;
-      if (!hasPermission) {
-        await _permChannel.invokeMethod('requestPermissions');
-        await Future.delayed(const Duration(milliseconds: 800));
-        return await _permChannel.invokeMethod<bool>('checkPermissions') ?? false;
+  Future<bool> _requestCameraPermission() async {
+    var status = await Permission.camera.status;
+    if (status.isGranted) return true;
+    if (status.isPermanentlyDenied) {
+      if (mounted) {
+        await showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF0D1F3C),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text(
+              'Camera Permission',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+            content: const Text(
+              'Camera access was denied. Please enable it in Settings.',
+              style: TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  openAppSettings();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1A6FFF),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('Open Settings', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
       }
-      return true;
-    } catch (_) {
       return false;
     }
+    status = await Permission.camera.request();
+    return status.isGranted;
   }
 
   Future<String?> _pickImageWithSource() async {
@@ -332,7 +362,7 @@ class _AppRootState extends State<AppRoot> {
     if (source == null) return null;
 
     if (source == ImageSource.camera) {
-      final granted = await _requestCameraPermissionIfNeeded();
+      final granted = await _requestCameraPermission();
       if (!granted) return null;
     }
 
@@ -413,8 +443,7 @@ class _AppRootState extends State<AppRoot> {
                     if (url.isEmpty) return NavigationActionPolicy.ALLOW;
                     if (_isExternalUrl(url)) {
                       try {
-                        await launchUrl(Uri.parse(url),
-                            mode: LaunchMode.externalApplication);
+                        await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
                       } catch (_) {}
                       return NavigationActionPolicy.CANCEL;
                     }
