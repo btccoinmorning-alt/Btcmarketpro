@@ -2,6 +2,7 @@ package com.btcmorning.btcmarketpro
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.webkit.WebView
 import androidx.core.app.ActivityCompat
@@ -13,12 +14,11 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private val CHANNEL = "com.btcmorning.btcmarketpro/permissions"
-    private val PERMISSION_REQUEST = 1002
+    private val NOTIF_REQUEST = 1003
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WebView.setWebContentsDebuggingEnabled(false)
-        requestNecessaryPermissions()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -26,31 +26,40 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "requestPermissions" -> {
-                        requestNecessaryPermissions()
+                    "setAppReady" -> {
+                        requestNotificationPermission()
                         result.success(true)
                     }
-                    "checkPermissions" -> {
-                        result.success(hasNecessaryPermissions())
+                    "requestNotificationPermission" -> {
+                        requestNotificationPermission()
+                        result.success(true)
+                    }
+                    "checkNotificationPermission" -> {
+                        result.success(hasNotificationPermission())
                     }
                     else -> result.notImplemented()
                 }
             }
     }
 
-    private fun requestNecessaryPermissions() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.CAMERA),
-                PERMISSION_REQUEST
-            )
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (!hasNotificationPermission()) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    NOTIF_REQUEST
+                )
+            }
         }
     }
 
-    private fun hasNecessaryPermissions(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED
+    private fun hasNotificationPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else true
     }
 }
