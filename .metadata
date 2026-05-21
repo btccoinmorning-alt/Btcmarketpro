@@ -1,0 +1,14 @@
+version:
+  revision: dec2ee5c1f
+  channel: stable
+
+project_type: app
+
+migration:
+  platforms:
+    - platform: root
+      create_revision: dec2ee5c1f
+      base_revision: dec2ee5c1f
+    - platform: android
+      create_revision: dec2ee5c1f
+      base_revision: dec2ee5c1f
