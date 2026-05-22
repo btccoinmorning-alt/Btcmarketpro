@@ -56,8 +56,6 @@ bool _isExternalUrl(String url) {
   return true;
 }
 
-// Sadece WebRTC'yi kapat — file input interception KALDIRILDI
-// Artık onShowFileChooser native callback kullanıyoruz
 const String _webRtcBlockScript = r'''
 (function () {
   ['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection',
@@ -248,7 +246,6 @@ class _AppRootState extends State<AppRoot> {
 
   Future<bool> _requestCameraPermission() async {
     var status = await Permission.camera.status;
-    if (status.isGranted) return true;
     if (status.isPermanentlyDenied) {
       if (mounted) {
         await showDialog(
@@ -289,12 +286,21 @@ class _AppRootState extends State<AppRoot> {
       }
       return false;
     }
-    status = await Permission.camera.request();
+    if (!status.isGranted) {
+      status = await Permission.camera.request();
+    }
     return status.isGranted;
   }
 
-  // ✅ ANA FIX: onShowFileChooser — WebView'den gelen tüm
-  // file input tetiklemelerini (label, JS, click) native olarak yakalar
+  Future<bool> _requestStoragePermission() async {
+    if (await Permission.photos.isGranted) return true;
+    if (await Permission.storage.isGranted) return true;
+    final photosStatus = await Permission.photos.request();
+    if (photosStatus.isGranted) return true;
+    final storageStatus = await Permission.storage.request();
+    return storageStatus.isGranted;
+  }
+
   Future<List<Uri>?> _handleFileChooser(
     InAppWebViewController controller,
     FileChooserParams params,
@@ -304,12 +310,10 @@ class _AppRootState extends State<AppRoot> {
     ImageSource? source;
 
     if (isCameraCapture) {
-      // capture="camera" / capture="environment" — direkt kamera
       final granted = await _requestCameraPermission();
       if (!granted) return [];
       source = ImageSource.camera;
     } else {
-      // Normal file input — kullanıcıya seçim sun
       if (!mounted) return [];
       source = await showModalBottomSheet<ImageSource>(
         context: context,
@@ -358,6 +362,9 @@ class _AppRootState extends State<AppRoot> {
 
       if (source == ImageSource.camera) {
         final granted = await _requestCameraPermission();
+        if (!granted) return [];
+      } else {
+        final granted = await _requestStoragePermission();
         if (!granted) return [];
       }
     }
@@ -423,7 +430,6 @@ class _AppRootState extends State<AppRoot> {
                   onWebViewCreated: (controller) {
                     _controller = controller;
                   },
-                  // ✅ NATIVE FILE CHOOSER — tüm file input'ları yakalar
                   onShowFileChooser: _handleFileChooser,
                   onPermissionRequest: (controller, request) async {
                     return PermissionResponse(
