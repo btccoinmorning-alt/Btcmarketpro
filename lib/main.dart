@@ -78,6 +78,63 @@ const String _webRtcBlockScript = r'''
 })();
 ''';
 
+// File input'ları intercept eden JS — onShowFileChooser yerine kullanılıyor
+const String _filePickerScript = r'''
+(function() {
+  if (window.__flutterFileHandlerReady) return;
+  window.__flutterFileHandlerReady = true;
+
+  function hookInput(el) {
+    if (el.__flutterHooked) return;
+    el.__flutterHooked = true;
+    el.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      var capture = el.getAttribute('capture') || '';
+      window.flutter_inappwebview.callHandler('openFilePicker', {
+        accept: el.accept || '',
+        capture: capture,
+        multiple: el.multiple || false
+      }).then(function(result) {
+        if (!result || !result.base64) return;
+        try {
+          var bin = atob(result.base64);
+          var arr = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+          var blob = new Blob([arr], { type: result.mimeType || 'image/jpeg' });
+          var file = new File([blob], result.name || 'photo.jpg', { type: result.mimeType || 'image/jpeg' });
+          var dt = new DataTransfer();
+          dt.items.add(file);
+          el.files = dt.files;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new Event('input',  { bubbles: true }));
+        } catch(err) {
+          console.error('[FilePicker] inject error:', err);
+        }
+      }).catch(function(err) {
+        console.error('[FilePicker] handler error:', err);
+      });
+    }, true);
+  }
+
+  // Mevcut input'ları yakala
+  document.querySelectorAll('input[type="file"]').forEach(hookInput);
+
+  // Sonradan eklenen input'ları izle
+  new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      m.addedNodes.forEach(function(node) {
+        if (!node || node.nodeType !== 1) return;
+        if (node.tagName === 'INPUT' && node.type === 'file') hookInput(node);
+        if (node.querySelectorAll) {
+          node.querySelectorAll('input[type="file"]').forEach(hookInput);
+        }
+      });
+    });
+  }).observe(document.documentElement, { childList: true, subtree: true });
+})();
+''';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await _initNotifications();
@@ -301,20 +358,23 @@ class _AppRootState extends State<AppRoot> {
     return storageStatus.isGranted;
   }
 
-  Future<List<Uri>?> _handleFileChooser(
-    InAppWebViewController controller,
-    FileChooserParams params,
-  ) async {
-    final isCameraCapture = params.isCaptureEnabled == true;
+  // JS handler callback — ImagePicker açar, base64 döndürür
+  Future<Map<String, dynamic>?> _handleFilePickerRequest(
+      List<dynamic> args) async {
+    final params =
+        args.isNotEmpty ? args[0] as Map<dynamic, dynamic>? : null;
+    final capture = params?['capture']?.toString() ?? '';
+    final isCameraCapture =
+        capture == 'camera' || capture == 'environment' || capture == 'user';
 
     ImageSource? source;
 
     if (isCameraCapture) {
       final granted = await _requestCameraPermission();
-      if (!granted) return [];
+      if (!granted) return null;
       source = ImageSource.camera;
     } else {
-      if (!mounted) return [];
+      if (!mounted) return null;
       source = await showModalBottomSheet<ImageSource>(
         context: context,
         backgroundColor: const Color(0xFF0D1F3C),
@@ -358,14 +418,14 @@ class _AppRootState extends State<AppRoot> {
         ),
       );
 
-      if (source == null) return [];
+      if (source == null) return null;
 
       if (source == ImageSource.camera) {
         final granted = await _requestCameraPermission();
-        if (!granted) return [];
+        if (!granted) return null;
       } else {
         final granted = await _requestStoragePermission();
-        if (!granted) return [];
+        if (!granted) return null;
       }
     }
 
@@ -376,10 +436,18 @@ class _AppRootState extends State<AppRoot> {
         maxWidth: 1920,
         maxHeight: 1920,
       );
-      if (file == null) return [];
-      return [Uri.file(file.path)];
+      if (file == null) return null;
+      final bytes = await File(file.path).readAsBytes();
+      final base64Str = base64Encode(bytes);
+      final ext = file.path.split('.').last.toLowerCase();
+      final mimeType = ext == 'png' ? 'image/png' : 'image/jpeg';
+      return {
+        'base64': base64Str,
+        'mimeType': mimeType,
+        'name': file.name,
+      };
     } catch (_) {
-      return [];
+      return null;
     }
   }
 
@@ -429,8 +497,12 @@ class _AppRootState extends State<AppRoot> {
                   ),
                   onWebViewCreated: (controller) {
                     _controller = controller;
+                    // JS handler'ı kaydet — file input tıklamalarını yakalar
+                    controller.addJavaScriptHandler(
+                      handlerName: 'openFilePicker',
+                      callback: _handleFilePickerRequest,
+                    );
                   },
-                  onShowFileChooser: _handleFileChooser,
                   onPermissionRequest: (controller, request) async {
                     return PermissionResponse(
                       resources: request.resources,
@@ -453,6 +525,9 @@ class _AppRootState extends State<AppRoot> {
                   },
                   onLoadStop: (controller, url) async {
                     if (!mounted) return;
+                    // Her sayfa yüklendiğinde file input hook'u enjekte et
+                    await controller.evaluateJavascript(
+                        source: _filePickerScript);
                     _startForegroundPolling();
                     try {
                       await _permChannel.invokeMethod('setAppReady');
