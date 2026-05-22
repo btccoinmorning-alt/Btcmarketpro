@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -57,9 +56,10 @@ bool _isExternalUrl(String url) {
   return true;
 }
 
-const String _filePickerScript = r'''
+// Sadece WebRTC'yi kapat — file input interception KALDIRILDI
+// Artık onShowFileChooser native callback kullanıyoruz
+const String _webRtcBlockScript = r'''
 (function () {
-  // WebRTC kapat
   ['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection',
    'RTCIceCandidate','RTCSessionDescription'].forEach(function (k) {
     try { window[k] = undefined; } catch (e) {}
@@ -77,73 +77,8 @@ const String _filePickerScript = r'''
       }, configurable: false
     });
   } catch (e) {}
-
-  function handleFilePick(el) {
-    var mode = (el.capture && el.capture !== 'false' && el.capture !== '')
-               ? 'camera' : 'gallery';
-    window.flutter_inappwebview.callHandler('btcPickImage', mode)
-      .then(function (dataUrl) {
-        if (!dataUrl) return;
-        fetch(dataUrl)
-          .then(function (r) { return r.blob(); })
-          .then(function (blob) {
-            var file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
-            var dt = new DataTransfer();
-            dt.items.add(file);
-            el.files = dt.files;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-          });
-      }).catch(function () {});
-  }
-
-  var _origClick = HTMLInputElement.prototype.click;
-  HTMLInputElement.prototype.click = function () {
-    if (this.type === 'file' && (this.accept || '').indexOf('image') !== -1) {
-      handleFilePick(this);
-      return;
-    }
-    return _origClick.apply(this, arguments);
-  };
-
-  function interceptInput(el) {
-    if (el._btc) return;
-    el._btc = true;
-    el.addEventListener('click', function (e) {
-      if (el.type === 'file' && (el.accept || '').indexOf('image') !== -1) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        handleFilePick(el);
-      }
-    }, true);
-  }
-
-  function scanAll() {
-    document.querySelectorAll('input[type=file]').forEach(interceptInput);
-  }
-
-  new MutationObserver(function (mutations) {
-    mutations.forEach(function (m) {
-      m.addedNodes.forEach(function (node) {
-        if (node.nodeType !== 1) return;
-        if (node.tagName === 'INPUT') interceptInput(node);
-        if (node.querySelectorAll)
-          node.querySelectorAll('input[type=file]').forEach(interceptInput);
-      });
-    });
-  }).observe(document.documentElement, { childList: true, subtree: true });
-
-  document.addEventListener('DOMContentLoaded', scanAll);
-  if (document.readyState !== 'loading') scanAll();
 })();
 ''';
-
-final _userScripts = UnmodifiableListView<UserScript>([
-  UserScript(
-    source: _filePickerScript,
-    injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-  ),
-]);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -358,15 +293,25 @@ class _AppRootState extends State<AppRoot> {
     return status.isGranted;
   }
 
-  Future<String?> _pickImage(String mode) async {
-    ImageSource source;
+  // ✅ ANA FIX: onShowFileChooser — WebView'den gelen tüm
+  // file input tetiklemelerini (label, JS, click) native olarak yakalar
+  Future<List<Uri>?> _handleFileChooser(
+    InAppWebViewController controller,
+    FileChooserParams params,
+  ) async {
+    final isCameraCapture = params.isCaptureEnabled == true;
 
-    if (mode == 'camera') {
+    ImageSource? source;
+
+    if (isCameraCapture) {
+      // capture="camera" / capture="environment" — direkt kamera
       final granted = await _requestCameraPermission();
-      if (!granted) return null;
+      if (!granted) return [];
       source = ImageSource.camera;
     } else {
-      final picked = await showModalBottomSheet<ImageSource>(
+      // Normal file input — kullanıcıya seçim sun
+      if (!mounted) return [];
+      source = await showModalBottomSheet<ImageSource>(
         context: context,
         backgroundColor: const Color(0xFF0D1F3C),
         shape: const RoundedRectangleBorder(
@@ -389,7 +334,7 @@ class _AppRootState extends State<AppRoot> {
                 ListTile(
                   leading: const Icon(Icons.camera_alt_rounded,
                       color: Color(0xFF1A6FFF)),
-                  title: const Text('Camera',
+                  title: const Text('Kamera',
                       style: TextStyle(color: Colors.white)),
                   onTap: () =>
                       Navigator.pop(ctx, ImageSource.camera),
@@ -397,7 +342,7 @@ class _AppRootState extends State<AppRoot> {
                 ListTile(
                   leading: const Icon(Icons.photo_library_rounded,
                       color: Color(0xFF1A6FFF)),
-                  title: const Text('Gallery',
+                  title: const Text('Galeri',
                       style: TextStyle(color: Colors.white)),
                   onTap: () =>
                       Navigator.pop(ctx, ImageSource.gallery),
@@ -408,12 +353,13 @@ class _AppRootState extends State<AppRoot> {
           ),
         ),
       );
-      if (picked == null) return null;
-      if (picked == ImageSource.camera) {
+
+      if (source == null) return [];
+
+      if (source == ImageSource.camera) {
         final granted = await _requestCameraPermission();
-        if (!granted) return null;
+        if (!granted) return [];
       }
-      source = picked;
     }
 
     try {
@@ -423,23 +369,11 @@ class _AppRootState extends State<AppRoot> {
         maxWidth: 1920,
         maxHeight: 1920,
       );
-      if (file == null) return null;
-      final bytes = await file.readAsBytes();
-      return 'data:image/jpeg;base64,${base64Encode(bytes)}';
+      if (file == null) return [];
+      return [Uri.file(file.path)];
     } catch (_) {
-      return null;
+      return [];
     }
-  }
-
-  void _registerJsHandlers(InAppWebViewController controller) {
-    controller.addJavaScriptHandler(
-      handlerName: 'btcPickImage',
-      callback: (args) async {
-        final mode =
-            args.isNotEmpty ? args[0].toString() : 'gallery';
-        return await _pickImage(mode);
-      },
-    );
   }
 
   @override
@@ -464,10 +398,15 @@ class _AppRootState extends State<AppRoot> {
                 InAppWebView(
                   initialUrlRequest:
                       URLRequest(url: WebUri(_homeUrl)),
-                  initialUserScripts: _userScripts,
+                  initialUserScripts: [
+                    UserScript(
+                      source: _webRtcBlockScript,
+                      injectionTime:
+                          UserScriptInjectionTime.AT_DOCUMENT_START,
+                    ),
+                  ],
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
-                    // ✅ DÜZELTME: true — JS handler güvenilir çalışır
                     useHybridComposition: true,
                     mediaPlaybackRequiresUserGesture: true,
                     allowFileAccessFromFileURLs: false,
@@ -483,8 +422,9 @@ class _AppRootState extends State<AppRoot> {
                   ),
                   onWebViewCreated: (controller) {
                     _controller = controller;
-                    _registerJsHandlers(controller);
                   },
+                  // ✅ NATIVE FILE CHOOSER — tüm file input'ları yakalar
+                  onShowFileChooser: _handleFileChooser,
                   onPermissionRequest: (controller, request) async {
                     return PermissionResponse(
                       resources: request.resources,
@@ -616,8 +556,7 @@ class _NoInternetWidget extends StatelessWidget {
               const Text(
                   'Please check your connection and try again.',
                   textAlign: TextAlign.center,
-                  style:
-                      TextStyle(color: Colors.white54, fontSize: 14)),
+                  style: TextStyle(color: Colors.white54, fontSize: 14)),
               const SizedBox(height: 28),
               ElevatedButton.icon(
                 onPressed: onRetry,
@@ -664,8 +603,7 @@ class _ErrorWidget extends StatelessWidget {
               const SizedBox(height: 8),
               const Text('Something went wrong. Please try again.',
                   textAlign: TextAlign.center,
-                  style:
-                      TextStyle(color: Colors.white54, fontSize: 14)),
+                  style: TextStyle(color: Colors.white54, fontSize: 14)),
               const SizedBox(height: 28),
               ElevatedButton.icon(
                 onPressed: onRetry,
