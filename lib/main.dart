@@ -57,59 +57,68 @@ bool _isExternalUrl(String url) {
   return true;
 }
 
+// ── DÜZELTME: prototype.click direkt handleFilePick çağırıyor
+// DOM'a eklenmemiş dinamik input'ları da yakalar
 const String _filePickerScript = r'''
-(function() {
-  try { window.RTCPeerConnection = undefined; } catch(e) {}
-  try { window.webkitRTCPeerConnection = undefined; } catch(e) {}
-  try { window.mozRTCPeerConnection = undefined; } catch(e) {}
-  try { window.RTCIceCandidate = undefined; } catch(e) {}
-  try { window.RTCSessionDescription = undefined; } catch(e) {}
+(function () {
+  // WebRTC kapat
+  ['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection',
+   'RTCIceCandidate','RTCSessionDescription'].forEach(function (k) {
+    try { window[k] = undefined; } catch (e) {}
+  });
   try {
     Object.defineProperty(navigator, 'mediaDevices', {
-      get: function() {
+      get: function () {
         return {
-          getUserMedia: function() {
-            return Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
+          getUserMedia: function () {
+            return Promise.reject(new DOMException('NotAllowed', 'NotAllowedError'));
           },
-          enumerateDevices: function() { return Promise.resolve([]); },
-          getSupportedConstraints: function() { return {}; }
+          enumerateDevices: function () { return Promise.resolve([]); },
+          getSupportedConstraints: function () { return {}; }
         };
-      },
-      configurable: false
+      }, configurable: false
     });
-  } catch(e) {}
-  try {
-    navigator.getUserMedia = function(c, s, e) {
-      if (e) e(new DOMException('Permission denied', 'NotAllowedError'));
-    };
-    window.getUserMedia = navigator.getUserMedia;
-  } catch(e) {}
+  } catch (e) {}
 
-  function doPickImage(el) {
+  function handleFilePick(el) {
     var mode = (el.capture && el.capture !== 'false' && el.capture !== '')
                ? 'camera' : 'gallery';
     window.flutter_inappwebview.callHandler('btcPickImage', mode)
-      .then(function(dataUrl) {
+      .then(function (dataUrl) {
         if (!dataUrl) return;
-        fetch(dataUrl).then(function(r) { return r.blob(); }).then(function(blob) {
-          var file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
-          var dt = new DataTransfer();
-          dt.items.add(file);
-          el.files = dt.files;
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-      }).catch(function() {});
+        fetch(dataUrl)
+          .then(function (r) { return r.blob(); })
+          .then(function (blob) {
+            var file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
+            var dt = new DataTransfer();
+            dt.items.add(file);
+            el.files = dt.files;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          });
+      }).catch(function () {});
   }
 
+  // ── EN KRİTİK KISIM ──
+  // prototype.click override: DOM'da olsun olmasın TÜM file input click'lerini yakalar
+  var _origClick = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function () {
+    if (this.type === 'file' && (this.accept || '').indexOf('image') !== -1) {
+      handleFilePick(this);
+      return; // orijinal click'i ASLA çağırma
+    }
+    return _origClick.apply(this, arguments);
+  };
+
+  // DOM'daki input'lar için ek güvenlik (addEventListener ile)
   function interceptInput(el) {
-    if (el._btcDone) return;
-    el._btcDone = true;
-    el.addEventListener('click', function(e) {
+    if (el._btc) return;
+    el._btc = true;
+    el.addEventListener('click', function (e) {
       if (el.type === 'file' && (el.accept || '').indexOf('image') !== -1) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        doPickImage(el);
+        handleFilePick(el);
       }
     }, true);
   }
@@ -118,9 +127,9 @@ const String _filePickerScript = r'''
     document.querySelectorAll('input[type=file]').forEach(interceptInput);
   }
 
-  new MutationObserver(function(mutations) {
-    mutations.forEach(function(m) {
-      m.addedNodes.forEach(function(node) {
+  new MutationObserver(function (mutations) {
+    mutations.forEach(function (m) {
+      m.addedNodes.forEach(function (node) {
         if (node.nodeType !== 1) return;
         if (node.tagName === 'INPUT') interceptInput(node);
         if (node.querySelectorAll)
@@ -131,16 +140,6 @@ const String _filePickerScript = r'''
 
   document.addEventListener('DOMContentLoaded', scanAll);
   if (document.readyState !== 'loading') scanAll();
-
-  var _origClick = HTMLInputElement.prototype.click;
-  HTMLInputElement.prototype.click = function() {
-    var el = this;
-    if (el.type === 'file' && (el.accept || '').indexOf('image') !== -1) {
-      el.dispatchEvent(new MouseEvent('click', { bubbles: false, cancelable: true }));
-      return;
-    }
-    return _origClick.apply(this, arguments);
-  };
 })();
 ''';
 
@@ -286,18 +285,20 @@ class _AppRootState extends State<AppRoot> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0D1F3C),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Exit App',
-            style:
-                TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        content: const Text('Are you sure you want to exit BTCMarketPro?',
+            style: TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold)),
+        content: const Text(
+            'Are you sure you want to exit BTCMarketPro?',
             style: TextStyle(color: Colors.white70)),
         actionsAlignment: MainAxisAlignment.spaceEvenly,
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child:
-                const Text('No', style: TextStyle(color: Color(0xFF1A6FFF))),
+            child: const Text('No',
+                style: TextStyle(color: Color(0xFF1A6FFF))),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(true),
@@ -315,7 +316,6 @@ class _AppRootState extends State<AppRoot> {
     return result ?? false;
   }
 
-  // ── Kamera izni iste — sadece Camera seçildiğinde ──────────────────────────
   Future<bool> _requestCameraPermission() async {
     var status = await Permission.camera.status;
     if (status.isGranted) return true;
@@ -363,62 +363,67 @@ class _AppRootState extends State<AppRoot> {
     return status.isGranted;
   }
 
-  // ── Orijinal pickImage — kamera seçince izin iste, sonra aç ───────────────
-  Future<String?> _pickImageWithSource() async {
-    final source = await showModalBottomSheet<ImageSource>(
-      context: context,
-      backgroundColor: const Color(0xFF0D1F3C),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: Colors.white24,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              ListTile(
-                leading: const Icon(Icons.camera_alt_rounded,
-                    color: Color(0xFF1A6FFF)),
-                title: const Text('Camera',
-                    style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, ImageSource.camera),
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_library_rounded,
-                    color: Color(0xFF1A6FFF)),
-                title: const Text('Gallery',
-                    style: TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(ctx, ImageSource.gallery),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ),
-        ),
-      ),
-    );
+  // mode: 'camera' → direkt kamera, 'gallery' → seçim dialogu
+  Future<String?> _pickImage(String mode) async {
+    ImageSource source;
 
-    if (source == null) return null;
-
-    // ← SADECE BU SATIRLAR EKLENDİ — orijinale göre tek fark
-    if (source == ImageSource.camera) {
+    if (mode == 'camera') {
       final granted = await _requestCameraPermission();
       if (!granted) return null;
+      source = ImageSource.camera;
+    } else {
+      final picked = await showModalBottomSheet<ImageSource>(
+        context: context,
+        backgroundColor: const Color(0xFF0D1F3C),
+        shape: const RoundedRectangleBorder(
+            borderRadius:
+                BorderRadius.vertical(top: Radius.circular(20))),
+        builder: (ctx) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2)),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.camera_alt_rounded,
+                      color: Color(0xFF1A6FFF)),
+                  title: const Text('Camera',
+                      style: TextStyle(color: Colors.white)),
+                  onTap: () =>
+                      Navigator.pop(ctx, ImageSource.camera),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.photo_library_rounded,
+                      color: Color(0xFF1A6FFF)),
+                  title: const Text('Gallery',
+                      style: TextStyle(color: Colors.white)),
+                  onTap: () =>
+                      Navigator.pop(ctx, ImageSource.gallery),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        ),
+      );
+      if (picked == null) return null;
+      if (picked == ImageSource.camera) {
+        final granted = await _requestCameraPermission();
+        if (!granted) return null;
+      }
+      source = picked;
     }
-    // ─────────────────────────────────────────────────────
 
     try {
-      final picker = ImagePicker();
-      final file = await picker.pickImage(
+      final file = await ImagePicker().pickImage(
         source: source,
         imageQuality: 85,
         maxWidth: 1920,
@@ -436,7 +441,9 @@ class _AppRootState extends State<AppRoot> {
     controller.addJavaScriptHandler(
       handlerName: 'btcPickImage',
       callback: (args) async {
-        return await _pickImageWithSource();
+        final mode =
+            args.isNotEmpty ? args[0].toString() : 'gallery';
+        return await _pickImage(mode);
       },
     );
   }
@@ -466,10 +473,11 @@ class _AppRootState extends State<AppRoot> {
                   initialUserScripts: _userScripts,
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
+                    // Performans için hybrid composition kapat
+                    useHybridComposition: false,
                     mediaPlaybackRequiresUserGesture: true,
                     allowFileAccessFromFileURLs: false,
                     allowUniversalAccessFromFileURLs: false,
-                    useHybridComposition: true,
                     allowsInlineMediaPlayback: false,
                     domStorageEnabled: true,
                     databaseEnabled: true,
@@ -611,9 +619,11 @@ class _NoInternetWidget extends StatelessWidget {
                       fontSize: 18,
                       fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text('Please check your connection and try again.',
+              const Text(
+                  'Please check your connection and try again.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white54, fontSize: 14)),
+                  style:
+                      TextStyle(color: Colors.white54, fontSize: 14)),
               const SizedBox(height: 28),
               ElevatedButton.icon(
                 onPressed: onRetry,
@@ -660,7 +670,8 @@ class _ErrorWidget extends StatelessWidget {
               const SizedBox(height: 8),
               const Text('Something went wrong. Please try again.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white54, fontSize: 14)),
+                  style:
+                      TextStyle(color: Colors.white54, fontSize: 14)),
               const SizedBox(height: 28),
               ElevatedButton.icon(
                 onPressed: onRetry,
