@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -78,7 +79,6 @@ const String _webRtcBlockScript = r'''
 })();
 ''';
 
-// File input'ları intercept eden JS — onShowFileChooser yerine kullanılıyor
 const String _filePickerScript = r'''
 (function() {
   if (window.__flutterFileHandlerReady) return;
@@ -117,10 +117,8 @@ const String _filePickerScript = r'''
     }, true);
   }
 
-  // Mevcut input'ları yakala
   document.querySelectorAll('input[type="file"]').forEach(hookInput);
 
-  // Sonradan eklenen input'ları izle
   new MutationObserver(function(mutations) {
     mutations.forEach(function(m) {
       m.addedNodes.forEach(function(node) {
@@ -358,7 +356,6 @@ class _AppRootState extends State<AppRoot> {
     return storageStatus.isGranted;
   }
 
-  // JS handler callback — ImagePicker açar, base64 döndürür
   Future<Map<String, dynamic>?> _handleFilePickerRequest(
       List<dynamic> args) async {
     final params =
@@ -473,13 +470,13 @@ class _AppRootState extends State<AppRoot> {
                 InAppWebView(
                   initialUrlRequest:
                       URLRequest(url: WebUri(_homeUrl)),
-                  initialUserScripts: [
+                  initialUserScripts: UnmodifiableListView([
                     UserScript(
                       source: _webRtcBlockScript,
                       injectionTime:
                           UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
-                  ],
+                  ]),
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
                     useHybridComposition: true,
@@ -497,7 +494,6 @@ class _AppRootState extends State<AppRoot> {
                   ),
                   onWebViewCreated: (controller) {
                     _controller = controller;
-                    // JS handler'ı kaydet — file input tıklamalarını yakalar
                     controller.addJavaScriptHandler(
                       handlerName: 'openFilePicker',
                       callback: _handleFilePickerRequest,
@@ -525,7 +521,6 @@ class _AppRootState extends State<AppRoot> {
                   },
                   onLoadStop: (controller, url) async {
                     if (!mounted) return;
-                    // Her sayfa yüklendiğinde file input hook'u enjekte et
                     await controller.evaluateJavascript(
                         source: _filePickerScript);
                     _startForegroundPolling();
