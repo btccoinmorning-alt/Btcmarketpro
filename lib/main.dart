@@ -68,7 +68,7 @@ const String _webRtcBlockScript = r'''
       get: function () {
         return {
           getUserMedia: function () {
-            return Promise.reject(new DOMException('NotAllowed', 'NotAllowedError'));
+            return Promise.reject(new DOMException('NotAllowed','NotAllowedError'));
           },
           enumerateDevices: function () { return Promise.resolve([]); },
           getSupportedConstraints: function () { return {}; }
@@ -79,54 +79,76 @@ const String _webRtcBlockScript = r'''
 })();
 ''';
 
-const String _filePickerScript = r'''
-(function() {
-  if (window.__flutterFileHandlerReady) return;
-  window.__flutterFileHandlerReady = true;
+// AT_DOCUMENT_START'ta inject edilir — prototype override burada
+const String _filePickerEarlyScript = r'''
+(function () {
+  if (window.__flutterFilePickerEarly) return;
+  window.__flutterFilePickerEarly = true;
 
-  function hookInput(el) {
-    if (el.__flutterHooked) return;
-    el.__flutterHooked = true;
-    el.addEventListener('click', function(e) {
+  var _activeInput = null;
+
+  function _sendToPicker(el) {
+    _activeInput = el;
+    var capture = el.getAttribute('capture') || '';
+    window.flutter_inappwebview.callHandler('openFilePicker', {
+      accept:   el.accept || '',
+      capture:  capture,
+      multiple: el.multiple || false
+    }).then(function (result) {
+      if (!result || !result.base64 || !_activeInput) { _activeInput = null; return; }
+      try {
+        var bin = atob(result.base64);
+        var arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        var blob = new Blob([arr], { type: result.mimeType || 'image/jpeg' });
+        var file = new File([blob], result.name || 'photo.jpg', { type: result.mimeType || 'image/jpeg' });
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        _activeInput.files = dt.files;
+        _activeInput.dispatchEvent(new Event('change', { bubbles: true }));
+        _activeInput.dispatchEvent(new Event('input',  { bubbles: true }));
+      } catch (e) { console.error('[FP] inject:', e); }
+      _activeInput = null;
+    }).catch(function (e) { console.error('[FP] handler:', e); _activeInput = null; });
+  }
+
+  // Programmatic .click() override — GALLERY/CAMERA butonları bunu tetikler
+  var _origClick = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function () {
+    if (this.type === 'file') { _sendToPicker(this); return; }
+    return _origClick.apply(this, arguments);
+  };
+
+  // Kullanıcı direkt tıklama hook'u
+  function _hookInput(el) {
+    if (el.__fpHooked) return;
+    el.__fpHooked = true;
+    el.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      var capture = el.getAttribute('capture') || '';
-      window.flutter_inappwebview.callHandler('openFilePicker', {
-        accept: el.accept || '',
-        capture: capture,
-        multiple: el.multiple || false
-      }).then(function(result) {
-        if (!result || !result.base64) return;
-        try {
-          var bin = atob(result.base64);
-          var arr = new Uint8Array(bin.length);
-          for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-          var blob = new Blob([arr], { type: result.mimeType || 'image/jpeg' });
-          var file = new File([blob], result.name || 'photo.jpg', { type: result.mimeType || 'image/jpeg' });
-          var dt = new DataTransfer();
-          dt.items.add(file);
-          el.files = dt.files;
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          el.dispatchEvent(new Event('input',  { bubbles: true }));
-        } catch(err) {
-          console.error('[FilePicker] inject error:', err);
-        }
-      }).catch(function(err) {
-        console.error('[FilePicker] handler error:', err);
-      });
+      _sendToPicker(el);
     }, true);
   }
 
-  document.querySelectorAll('input[type="file"]').forEach(hookInput);
+  // DOM hazır olunca mevcut input'ları hook'la
+  function _hookAll() {
+    document.querySelectorAll('input[type="file"]').forEach(_hookInput);
+  }
 
-  new MutationObserver(function(mutations) {
-    mutations.forEach(function(m) {
-      m.addedNodes.forEach(function(node) {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _hookAll);
+  } else {
+    _hookAll();
+  }
+
+  // Sonradan eklenen input'ları izle
+  new MutationObserver(function (mutations) {
+    mutations.forEach(function (m) {
+      m.addedNodes.forEach(function (node) {
         if (!node || node.nodeType !== 1) return;
-        if (node.tagName === 'INPUT' && node.type === 'file') hookInput(node);
-        if (node.querySelectorAll) {
-          node.querySelectorAll('input[type="file"]').forEach(hookInput);
-        }
+        if (node.tagName === 'INPUT' && node.type === 'file') _hookInput(node);
+        if (node.querySelectorAll)
+          node.querySelectorAll('input[type="file"]').forEach(_hookInput);
       });
     });
   }).observe(document.documentElement, { childList: true, subtree: true });
@@ -271,17 +293,14 @@ class _AppRootState extends State<AppRoot> {
         shape:
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Exit App',
-            style: TextStyle(
-                color: Colors.white, fontWeight: FontWeight.bold)),
-        content: const Text(
-            'Are you sure you want to exit BTCMarketPro?',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: const Text('Are you sure you want to exit BTCMarketPro?',
             style: TextStyle(color: Colors.white70)),
         actionsAlignment: MainAxisAlignment.spaceEvenly,
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('No',
-                style: TextStyle(color: Color(0xFF1A6FFF))),
+            child: const Text('No', style: TextStyle(color: Color(0xFF1A6FFF))),
           ),
           ElevatedButton(
             onPressed: () => Navigator.of(ctx).pop(true),
@@ -397,16 +416,14 @@ class _AppRootState extends State<AppRoot> {
                       color: Color(0xFF1A6FFF)),
                   title: const Text('Kamera',
                       style: TextStyle(color: Colors.white)),
-                  onTap: () =>
-                      Navigator.pop(ctx, ImageSource.camera),
+                  onTap: () => Navigator.pop(ctx, ImageSource.camera),
                 ),
                 ListTile(
                   leading: const Icon(Icons.photo_library_rounded,
                       color: Color(0xFF1A6FFF)),
                   title: const Text('Galeri',
                       style: TextStyle(color: Colors.white)),
-                  onTap: () =>
-                      Navigator.pop(ctx, ImageSource.gallery),
+                  onTap: () => Navigator.pop(ctx, ImageSource.gallery),
                 ),
                 const SizedBox(height: 8),
               ],
@@ -476,6 +493,12 @@ class _AppRootState extends State<AppRoot> {
                       injectionTime:
                           UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
+                    // Prototype override — sayfa JS'i çalışmadan önce inject et
+                    UserScript(
+                      source: _filePickerEarlyScript,
+                      injectionTime:
+                          UserScriptInjectionTime.AT_DOCUMENT_START,
+                    ),
                   ]),
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
@@ -521,8 +544,9 @@ class _AppRootState extends State<AppRoot> {
                   },
                   onLoadStop: (controller, url) async {
                     if (!mounted) return;
+                    // Yedek olarak tekrar inject et (SPA navigasyonları için)
                     await controller.evaluateJavascript(
-                        source: _filePickerScript);
+                        source: _filePickerEarlyScript);
                     _startForegroundPolling();
                     try {
                       await _permChannel.invokeMethod('setAppReady');
@@ -629,8 +653,7 @@ class _NoInternetWidget extends StatelessWidget {
                       fontSize: 18,
                       fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text(
-                  'Please check your connection and try again.',
+              const Text('Please check your connection and try again.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.white54, fontSize: 14)),
               const SizedBox(height: 28),
