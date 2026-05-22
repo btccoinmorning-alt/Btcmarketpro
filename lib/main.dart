@@ -12,31 +12,29 @@ import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'background_service.dart';
 
-// ─── Bildirim ────────────────────────────────────────────────────────────────
-
 final FlutterLocalNotificationsPlugin _notifPlugin =
     FlutterLocalNotificationsPlugin();
 
+const _permChannel = MethodChannel('com.btcmorning.btcmarketpro/permissions');
+
 Future<void> _initNotifications() async {
   const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-  await _notifPlugin.initialize(
-    const InitializationSettings(android: androidInit),
-  );
+  const initSettings = InitializationSettings(android: androidInit);
+  await _notifPlugin.initialize(initSettings);
 }
 
 Future<void> _showNotification(String title, String body) async {
-  const details = NotificationDetails(
-    android: AndroidNotificationDetails(
-      'btcmarketpro_channel',
-      'BTCMarketPro Notifications',
-      channelDescription: 'News, Airdrops, Launchpads and Testnet alerts',
-      importance: Importance.high,
-      priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
-      playSound: true,
-      enableVibration: true,
-    ),
+  const androidDetails = AndroidNotificationDetails(
+    'btcmarketpro_channel',
+    'BTCMarketPro Notifications',
+    channelDescription: 'News, Airdrops, Launchpads and Testnet alerts',
+    importance: Importance.high,
+    priority: Priority.high,
+    icon: '@mipmap/ic_launcher',
+    playSound: true,
+    enableVibration: true,
   );
+  const details = NotificationDetails(android: androidDetails);
   await _notifPlugin.show(
     DateTime.now().millisecondsSinceEpoch ~/ 1000,
     title,
@@ -44,8 +42,6 @@ Future<void> _showNotification(String title, String body) async {
     details,
   );
 }
-
-// ─── URL yardımcısı ───────────────────────────────────────────────────────────
 
 bool _isExternalUrl(String url) {
   if (url.isEmpty) return false;
@@ -61,55 +57,89 @@ bool _isExternalUrl(String url) {
   return true;
 }
 
-// ─── JS: file input override ─────────────────────────────────────────────────
-
 const String _filePickerScript = r'''
-(function () {
-  // WebRTC'yi tamamen kapat
-  ['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection',
-   'RTCIceCandidate','RTCSessionDescription'].forEach(function(k) {
-    try { window[k] = undefined; } catch(e) {}
-  });
+(function() {
+  try { window.RTCPeerConnection = undefined; } catch(e) {}
+  try { window.webkitRTCPeerConnection = undefined; } catch(e) {}
+  try { window.mozRTCPeerConnection = undefined; } catch(e) {}
+  try { window.RTCIceCandidate = undefined; } catch(e) {}
+  try { window.RTCSessionDescription = undefined; } catch(e) {}
   try {
     Object.defineProperty(navigator, 'mediaDevices', {
-      get: function () {
+      get: function() {
         return {
-          getUserMedia: function () {
-            return Promise.reject(new DOMException('NotAllowed', 'NotAllowedError'));
+          getUserMedia: function() {
+            return Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
           },
-          enumerateDevices: function () { return Promise.resolve([]); },
-          getSupportedConstraints: function () { return {}; }
+          enumerateDevices: function() { return Promise.resolve([]); },
+          getSupportedConstraints: function() { return {}; }
         };
       },
       configurable: false
     });
-  } catch (e) {}
+  } catch(e) {}
+  try {
+    navigator.getUserMedia = function(c, s, e) {
+      if (e) e(new DOMException('Permission denied', 'NotAllowedError'));
+    };
+    window.getUserMedia = navigator.getUserMedia;
+  } catch(e) {}
 
-  // Resim dosyası input tıklamalarını Flutter'a yönlendir
-  var _orig = HTMLInputElement.prototype.click;
-  HTMLInputElement.prototype.click = function () {
+  function doPickImage(el) {
+    var mode = (el.capture && el.capture !== 'false' && el.capture !== '')
+               ? 'camera' : 'gallery';
+    window.flutter_inappwebview.callHandler('btcPickImage', mode)
+      .then(function(dataUrl) {
+        if (!dataUrl) return;
+        fetch(dataUrl).then(function(r) { return r.blob(); }).then(function(blob) {
+          var file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
+          var dt = new DataTransfer();
+          dt.items.add(file);
+          el.files = dt.files;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+      }).catch(function() {});
+  }
+
+  function interceptInput(el) {
+    if (el._btcDone) return;
+    el._btcDone = true;
+    el.addEventListener('click', function(e) {
+      if (el.type === 'file' && (el.accept || '').indexOf('image') !== -1) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        doPickImage(el);
+      }
+    }, true);
+  }
+
+  function scanAll() {
+    document.querySelectorAll('input[type=file]').forEach(interceptInput);
+  }
+
+  new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      m.addedNodes.forEach(function(node) {
+        if (node.nodeType !== 1) return;
+        if (node.tagName === 'INPUT') interceptInput(node);
+        if (node.querySelectorAll)
+          node.querySelectorAll('input[type=file]').forEach(interceptInput);
+      });
+    });
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
+  document.addEventListener('DOMContentLoaded', scanAll);
+  if (document.readyState !== 'loading') scanAll();
+
+  var _origClick = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function() {
     var el = this;
     if (el.type === 'file' && (el.accept || '').indexOf('image') !== -1) {
-      var mode = el.capture ? 'camera' : 'gallery';
-      window.flutter_inappwebview
-        .callHandler('btcPickImage', mode)
-        .then(function (dataUrl) {
-          if (!dataUrl) return;
-          fetch(dataUrl)
-            .then(function (r) { return r.blob(); })
-            .then(function (blob) {
-              var file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
-              var dt = new DataTransfer();
-              dt.items.add(file);
-              el.files = dt.files;
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              el.dispatchEvent(new Event('input',  { bubbles: true }));
-            });
-        })
-        .catch(function () {});
+      el.dispatchEvent(new MouseEvent('click', { bubbles: false, cancelable: true }));
       return;
     }
-    return _orig.apply(this, arguments);
+    return _origClick.apply(this, arguments);
   };
 })();
 ''';
@@ -120,8 +150,6 @@ final _userScripts = UnmodifiableListView<UserScript>([
     injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
   ),
 ]);
-
-// ─── main ────────────────────────────────────────────────────────────────────
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -138,8 +166,6 @@ void main() async {
   );
   runApp(const BTCMarketProApp());
 }
-
-// ─── App ─────────────────────────────────────────────────────────────────────
 
 class BTCMarketProApp extends StatelessWidget {
   const BTCMarketProApp({super.key});
@@ -162,8 +188,6 @@ class BTCMarketProApp extends StatelessWidget {
   }
 }
 
-// ─── AppRoot ─────────────────────────────────────────────────────────────────
-
 class AppRoot extends StatefulWidget {
   const AppRoot({super.key});
 
@@ -172,71 +196,66 @@ class AppRoot extends StatefulWidget {
 }
 
 class _AppRootState extends State<AppRoot> {
-  InAppWebViewController? _webCtrl;
+  InAppWebViewController? _controller;
   bool _showSplash = true;
-  bool _hasError   = false;
+  bool _hasError = false;
   bool _hasInternet = true;
+  late StreamSubscription<List<ConnectivityResult>> _connectivitySub;
   bool _pollingStarted = false;
-  bool _notifPermAsked = false;
-
-  late StreamSubscription<List<ConnectivityResult>> _connSub;
   Timer? _notifTimer;
   int _lastChecked = 0;
 
-  static const _homeUrl   = 'https://www.btcmorning.com/btcmarketpro/';
-  static const _notifyUrl =
+  static const String _homeUrl = 'https://www.btcmorning.com/btcmarketpro/';
+  static const String _notifyUrl =
       'https://www.btcmorning.com/wp-content/plugins/btcmarketpro/notify_check.php';
-
-  // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
     _lastChecked = DateTime.now().millisecondsSinceEpoch ~/ 1000 - 300;
-    _connSub = Connectivity().onConnectivityChanged.listen((results) {
+    _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
+      final hasNet =
+          results.isNotEmpty && results.first != ConnectivityResult.none;
       if (!mounted) return;
-      setState(() {
-        _hasInternet =
-            results.isNotEmpty && results.first != ConnectivityResult.none;
-      });
+      setState(() => _hasInternet = hasNet);
     });
-    Future.delayed(const Duration(seconds: 12), () {
+    Future.delayed(const Duration(seconds: 10), () {
       if (mounted && _showSplash) setState(() => _showSplash = false);
     });
   }
 
   @override
   void dispose() {
-    _connSub.cancel();
+    _connectivitySub.cancel();
     _notifTimer?.cancel();
     super.dispose();
   }
 
-  // ── Bildirim polling ───────────────────────────────────────────────────────
-
-  void _startPolling() {
+  void _startForegroundPolling() {
     if (_pollingStarted) return;
     _pollingStarted = true;
-    Future.delayed(const Duration(seconds: 5), _checkNotifs);
-    _notifTimer =
-        Timer.periodic(const Duration(minutes: 2), (_) => _checkNotifs());
+    Future.delayed(const Duration(seconds: 5), _checkForNotifications);
+    _notifTimer = Timer.periodic(const Duration(minutes: 2), (_) async {
+      await _checkForNotifications();
+    });
   }
 
-  Future<void> _checkNotifs() async {
+  Future<void> _checkForNotifications() async {
     if (!_hasInternet) return;
     try {
-      final client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 10);
-      final req  = await client.getUrl(Uri.parse('$_notifyUrl?since=$_lastChecked'));
-      final resp = await req.close();
-      if (resp.statusCode != 200) return;
-      final body = await resp.transform(utf8.decoder).join();
+      final client = HttpClient();
+      client.connectionTimeout = const Duration(seconds: 10);
+      final uri = Uri.parse('$_notifyUrl?since=$_lastChecked');
+      final request = await client.getUrl(uri);
+      final response = await request.close();
+      if (response.statusCode != 200) return;
+      final body = await response.transform(utf8.decoder).join();
       final json = jsonDecode(body) as Map<String, dynamic>;
       if (json['success'] != true) return;
       if ((json['new_count'] as int? ?? 0) == 0) return;
       final items = json['items'] as List<dynamic>? ?? [];
       if (items.isEmpty) return;
-      final item  = items.first as Map<String, dynamic>;
+      final item = items.first as Map<String, dynamic>;
       final label = item['label'] as String? ?? '🔔 BTCMarketPro';
       final title = item['title'] as String? ?? '';
       if (title.isNotEmpty) await _showNotification(label, title);
@@ -245,156 +264,140 @@ class _AppRootState extends State<AppRoot> {
     } catch (_) {}
   }
 
-  // ── Bildirim izni: sayfa yüklendikten 45 sn sonra, bir kez sor ────────────
-
-  void _askNotifPermissionLater() {
-    if (_notifPermAsked) return;
-    _notifPermAsked = true;
-    Future.delayed(const Duration(seconds: 45), () async {
-      if (!mounted) return;
-      await Permission.notification.request();
+  Future<void> _reloadPage() async {
+    setState(() {
+      _hasError = false;
+      _showSplash = true;
+      _pollingStarted = false;
     });
+    await _controller?.reload();
   }
 
-  // ── Kamera izni ────────────────────────────────────────────────────────────
-
-  Future<bool> _requestCameraPermission() async {
-    var status = await Permission.camera.status;
-    if (status.isGranted) return true;
-
-    if (status.isPermanentlyDenied) {
-      await _showPermissionDeniedDialog(
-        icon: Icons.camera_alt_rounded,
-        title: 'Camera Permission',
-        message: 'Camera access is permanently denied.\nPlease enable it in Settings.',
-      );
+  Future<bool> _onWillPop() async {
+    if (_controller != null && await _controller!.canGoBack()) {
+      await _controller!.goBack();
       return false;
     }
-
-    status = await Permission.camera.request();
-    return status.isGranted;
+    return _showExitDialog();
   }
 
-  // ── Galeri izni ────────────────────────────────────────────────────────────
-
-  Future<bool> _requestGalleryPermission() async {
-    // Android 13+: READ_MEDIA_IMAGES | Android 12-: READ_EXTERNAL_STORAGE
-    final permission = (Platform.isAndroid)
-        ? Permission.photos
-        : Permission.photos;
-
-    var status = await permission.status;
-    if (status.isGranted || status.isLimited) return true;
-
-    if (status.isPermanentlyDenied) {
-      await _showPermissionDeniedDialog(
-        icon: Icons.photo_library_rounded,
-        title: 'Gallery Permission',
-        message: 'Gallery access is permanently denied.\nPlease enable it in Settings.',
-      );
-      return false;
-    }
-
-    status = await permission.request();
-    return status.isGranted || status.isLimited;
-  }
-
-  // ── İzin reddedildi dialogu ────────────────────────────────────────────────
-
-  Future<void> _showPermissionDeniedDialog({
-    required IconData icon,
-    required String title,
-    required String message,
-  }) async {
-    if (!mounted) return;
-    await showDialog(
+  Future<bool> _showExitDialog() async {
+    final result = await showDialog<bool>(
       context: context,
-      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0D1F3C),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        icon: Icon(icon, color: const Color(0xFF1A6FFF), size: 40),
-        title: Text(
-          title,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-            fontSize: 17,
-          ),
-          textAlign: TextAlign.center,
-        ),
-        content: Text(
-          message,
-          style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.5),
-          textAlign: TextAlign.center,
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Exit App',
+            style:
+                TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: const Text('Are you sure you want to exit BTCMarketPro?',
+            style: TextStyle(color: Colors.white70)),
         actionsAlignment: MainAxisAlignment.spaceEvenly,
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white38)),
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child:
+                const Text('No', style: TextStyle(color: Color(0xFF1A6FFF))),
           ),
-          ElevatedButton.icon(
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              openAppSettings();
-            },
-            icon: const Icon(Icons.settings_rounded, size: 16),
-            label: const Text('Open Settings'),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF1A6FFF),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
+                  borderRadius: BorderRadius.circular(8)),
             ),
+            child: const Text('Yes'),
           ),
         ],
       ),
     );
+    return result ?? false;
   }
 
-  // ── Fotoğraf seçici ────────────────────────────────────────────────────────
+  // ── Kamera izni iste — sadece Camera seçildiğinde ──────────────────────────
+  Future<bool> _requestCameraPermission() async {
+    var status = await Permission.camera.status;
+    if (status.isGranted) return true;
+    if (status.isPermanentlyDenied) {
+      if (mounted) {
+        await showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF0D1F3C),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16)),
+            title: const Text('Camera Permission',
+                style: TextStyle(
+                    color: Colors.white, fontWeight: FontWeight.bold)),
+            content: const Text(
+                'Camera access denied. Please enable it in Settings.',
+                style: TextStyle(color: Colors.white70)),
+            actionsAlignment: MainAxisAlignment.spaceEvenly,
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Cancel',
+                    style: TextStyle(color: Colors.white54)),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  openAppSettings();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1A6FFF),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('Open Settings'),
+              ),
+            ],
+          ),
+        );
+      }
+      return false;
+    }
+    status = await Permission.camera.request();
+    return status.isGranted;
+  }
 
-  Future<String?> _pickImage() async {
+  // ── Orijinal pickImage — kamera seçince izin iste, sonra aç ───────────────
+  Future<String?> _pickImageWithSource() async {
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
       backgroundColor: const Color(0xFF0D1F3C),
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          padding: const EdgeInsets.symmetric(vertical: 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
                 width: 40,
                 height: 4,
-                margin: const EdgeInsets.only(bottom: 20),
+                margin: const EdgeInsets.only(bottom: 16),
                 decoration: BoxDecoration(
                   color: Colors.white24,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              const Text(
-                'Select Photo Source',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-              const SizedBox(height: 16),
-              _SourceTile(
-                icon: Icons.camera_alt_rounded,
-                label: 'Camera',
+              ListTile(
+                leading: const Icon(Icons.camera_alt_rounded,
+                    color: Color(0xFF1A6FFF)),
+                title: const Text('Camera',
+                    style: TextStyle(color: Colors.white)),
                 onTap: () => Navigator.pop(ctx, ImageSource.camera),
               ),
-              const SizedBox(height: 8),
-              _SourceTile(
-                icon: Icons.photo_library_rounded,
-                label: 'Gallery',
+              ListTile(
+                leading: const Icon(Icons.photo_library_rounded,
+                    color: Color(0xFF1A6FFF)),
+                title: const Text('Gallery',
+                    style: TextStyle(color: Colors.white)),
                 onTap: () => Navigator.pop(ctx, ImageSource.gallery),
               ),
               const SizedBox(height: 8),
@@ -406,17 +409,16 @@ class _AppRootState extends State<AppRoot> {
 
     if (source == null) return null;
 
-    // İzin kontrolü — sadece burada, açılışta değil
+    // ← SADECE BU SATIRLAR EKLENDİ — orijinale göre tek fark
     if (source == ImageSource.camera) {
-      final ok = await _requestCameraPermission();
-      if (!ok) return null;
-    } else {
-      final ok = await _requestGalleryPermission();
-      if (!ok) return null;
+      final granted = await _requestCameraPermission();
+      if (!granted) return null;
     }
+    // ─────────────────────────────────────────────────────
 
     try {
-      final file = await ImagePicker().pickImage(
+      final picker = ImagePicker();
+      final file = await picker.pickImage(
         source: source,
         imageQuality: 85,
         maxWidth: 1920,
@@ -430,77 +432,23 @@ class _AppRootState extends State<AppRoot> {
     }
   }
 
-  // ── JS handler kaydı ──────────────────────────────────────────────────────
-
-  void _registerHandlers(InAppWebViewController c) {
-    c.addJavaScriptHandler(
+  void _registerJsHandlers(InAppWebViewController controller) {
+    controller.addJavaScriptHandler(
       handlerName: 'btcPickImage',
-      callback: (_) async => _pickImage(),
+      callback: (args) async {
+        return await _pickImageWithSource();
+      },
     );
   }
-
-  // ── Reload ────────────────────────────────────────────────────────────────
-
-  Future<void> _reload() async {
-    setState(() {
-      _hasError = false;
-      _showSplash = true;
-      _pollingStarted = false;
-    });
-    await _webCtrl?.reload();
-  }
-
-  // ── Geri / çıkış ─────────────────────────────────────────────────────────
-
-  Future<bool> _onBack() async {
-    if (_webCtrl != null && await _webCtrl!.canGoBack()) {
-      await _webCtrl!.goBack();
-      return false;
-    }
-    return _exitDialog();
-  }
-
-  Future<bool> _exitDialog() async {
-    final yes = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF0D1F3C),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: const Text('Exit App',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        content: const Text('Are you sure you want to exit BTCMarketPro?',
-            style: TextStyle(color: Colors.white70)),
-        actionsAlignment: MainAxisAlignment.spaceEvenly,
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('No', style: TextStyle(color: Color(0xFF1A6FFF))),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF1A6FFF),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10)),
-            ),
-            child: const Text('Yes'),
-          ),
-        ],
-      ),
-    );
-    return yes ?? false;
-  }
-
-  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
+      onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
-        if (await _onBack() && mounted) SystemNavigator.pop();
+        final shouldPop = await _onWillPop();
+        if (shouldPop && mounted) SystemNavigator.pop();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF071330),
@@ -508,9 +456,9 @@ class _AppRootState extends State<AppRoot> {
           child: Stack(
             children: [
               if (!_hasInternet)
-                _NoInternetScreen(onRetry: _reload)
+                _NoInternetWidget(onRetry: _reloadPage)
               else if (_hasError)
-                _ErrorScreen(onRetry: _reload)
+                _ErrorWidget(onRetry: _reloadPage)
               else
                 InAppWebView(
                   initialUrlRequest:
@@ -531,49 +479,52 @@ class _AppRootState extends State<AppRoot> {
                         'AppleWebKit/537.36 (KHTML, like Gecko) '
                         'Chrome/124.0.0.0 Mobile Safari/537.36',
                   ),
-                  onWebViewCreated: (c) {
-                    _webCtrl = c;
-                    _registerHandlers(c);
+                  onWebViewCreated: (controller) {
+                    _controller = controller;
+                    _registerJsHandlers(controller);
                   },
-                  // WebView'den gelen kamera/mikrofon isteklerini reddet
-                  // (gerçek kamera ImagePicker ile açılıyor, WebRTC değil)
-                  onPermissionRequest: (_, req) async => PermissionResponse(
-                    resources: req.resources,
-                    action: PermissionResponseAction.DENY,
-                  ),
-                  shouldOverrideUrlLoading: (_, nav) async {
-                    final url = nav.request.url?.toString() ?? '';
+                  onPermissionRequest: (controller, request) async {
+                    return PermissionResponse(
+                      resources: request.resources,
+                      action: PermissionResponseAction.DENY,
+                    );
+                  },
+                  shouldOverrideUrlLoading:
+                      (controller, navigationAction) async {
+                    final url =
+                        navigationAction.request.url?.toString() ?? '';
+                    if (url.isEmpty) return NavigationActionPolicy.ALLOW;
                     if (_isExternalUrl(url)) {
                       try {
-                        await launchUrl(
-                          Uri.parse(url),
-                          mode: LaunchMode.externalApplication,
-                        );
+                        await launchUrl(Uri.parse(url),
+                            mode: LaunchMode.externalApplication);
                       } catch (_) {}
                       return NavigationActionPolicy.CANCEL;
                     }
                     return NavigationActionPolicy.ALLOW;
                   },
-                  onLoadStop: (_, __) {
+                  onLoadStop: (controller, url) async {
                     if (!mounted) return;
+                    _startForegroundPolling();
+                    try {
+                      await _permChannel.invokeMethod('setAppReady');
+                    } catch (_) {}
                     setState(() {
                       _showSplash = false;
-                      _hasError   = false;
+                      _hasError = false;
                     });
-                    _startPolling();
-                    _askNotifPermissionLater(); // 45 sn sonra, bir kez
                   },
-                  onReceivedError: (_, req, __) {
+                  onReceivedError: (controller, request, error) {
                     if (!mounted) return;
-                    if (req.isForMainFrame ?? false) {
+                    if (request.isForMainFrame ?? false) {
                       setState(() {
                         _showSplash = false;
-                        _hasError   = true;
+                        _hasError = true;
                       });
                     }
                   },
                 ),
-              if (_showSplash) const _SplashScreen(),
+              if (_showSplash) const SplashScreen(),
             ],
           ),
         ),
@@ -582,50 +533,8 @@ class _AppRootState extends State<AppRoot> {
   }
 }
 
-// ─── Source Tile widget ───────────────────────────────────────────────────────
-
-class _SourceTile extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  const _SourceTile({required this.icon, required this.label, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1A2F55),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Row(
-          children: [
-            Icon(icon, color: const Color(0xFF1A6FFF)),
-            const SizedBox(width: 16),
-            Text(
-              label,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Splash ───────────────────────────────────────────────────────────────────
-
-class _SplashScreen extends StatelessWidget {
-  const _SplashScreen();
-
+class SplashScreen extends StatelessWidget {
+  const SplashScreen({super.key});
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -641,48 +550,37 @@ class _SplashScreen extends StatelessWidget {
                 color: const Color(0xFF0D1F3C),
                 borderRadius: BorderRadius.circular(28),
                 border: Border.all(
-                  color: const Color(0xFF1A6FFF).withOpacity(0.35),
+                  color: const Color(0xFF1A6FFF).withOpacity(0.3),
                   width: 1.5,
                 ),
               ),
               child: const Center(
-                child: Text(
-                  '₿',
-                  style: TextStyle(
-                    color: Color(0xFF1A6FFF),
-                    fontSize: 58,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                child: Text('₿',
+                    style: TextStyle(
+                        color: Color(0xFF1A6FFF),
+                        fontSize: 58,
+                        fontWeight: FontWeight.bold)),
               ),
             ),
             const SizedBox(height: 28),
-            const Text(
-              'BTCMarketPro',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.5,
-              ),
-            ),
+            const Text('BTCMarketPro',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.5)),
             const SizedBox(height: 8),
-            const Text(
-              'Advanced Crypto Platform',
-              style: TextStyle(
-                color: Color(0xFF1A6FFF),
-                fontSize: 13,
-                letterSpacing: 0.5,
-              ),
-            ),
+            const Text('Advanced Crypto Platform',
+                style: TextStyle(
+                    color: Color(0xFF1A6FFF),
+                    fontSize: 13,
+                    letterSpacing: 0.5)),
             const SizedBox(height: 40),
             const SizedBox(
               width: 28,
               height: 28,
               child: CircularProgressIndicator(
-                color: Color(0xFF1A6FFF),
-                strokeWidth: 2.5,
-              ),
+                  color: Color(0xFF1A6FFF), strokeWidth: 2.5),
             ),
           ],
         ),
@@ -691,12 +589,9 @@ class _SplashScreen extends StatelessWidget {
   }
 }
 
-// ─── No Internet ─────────────────────────────────────────────────────────────
-
-class _NoInternetScreen extends StatelessWidget {
+class _NoInternetWidget extends StatelessWidget {
   final VoidCallback onRetry;
-  const _NoInternetScreen({required this.onRetry});
-
+  const _NoInternetWidget({required this.onRetry});
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -707,10 +602,14 @@ class _NoInternetScreen extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.wifi_off_rounded, size: 72, color: Colors.white24),
+              const Icon(Icons.wifi_off_rounded,
+                  size: 72, color: Colors.white24),
               const SizedBox(height: 20),
               const Text('No Internet Connection',
-                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               const Text('Please check your connection and try again.',
                   textAlign: TextAlign.center,
@@ -723,8 +622,10 @@ class _NoInternetScreen extends StatelessWidget {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1A6FFF),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 28, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ],
@@ -735,12 +636,9 @@ class _NoInternetScreen extends StatelessWidget {
   }
 }
 
-// ─── Error ────────────────────────────────────────────────────────────────────
-
-class _ErrorScreen extends StatelessWidget {
+class _ErrorWidget extends StatelessWidget {
   final VoidCallback onRetry;
-  const _ErrorScreen({required this.onRetry});
-
+  const _ErrorWidget({required this.onRetry});
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -751,10 +649,14 @@ class _ErrorScreen extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline_rounded, size: 72, color: Colors.redAccent),
+              const Icon(Icons.error_outline_rounded,
+                  size: 72, color: Colors.redAccent),
               const SizedBox(height: 20),
               const Text('Page Failed to Load',
-                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               const Text('Something went wrong. Please try again.',
                   textAlign: TextAlign.center,
@@ -767,8 +669,10 @@ class _ErrorScreen extends StatelessWidget {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1A6FFF),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 28, vertical: 12),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ],
