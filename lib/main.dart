@@ -57,8 +57,6 @@ bool _isExternalUrl(String url) {
   return true;
 }
 
-// ── DÜZELTME: prototype.click direkt handleFilePick çağırıyor
-// DOM'a eklenmemiş dinamik input'ları da yakalar
 const String _filePickerScript = r'''
 (function () {
   // WebRTC kapat
@@ -99,18 +97,15 @@ const String _filePickerScript = r'''
       }).catch(function () {});
   }
 
-  // ── EN KRİTİK KISIM ──
-  // prototype.click override: DOM'da olsun olmasın TÜM file input click'lerini yakalar
   var _origClick = HTMLInputElement.prototype.click;
   HTMLInputElement.prototype.click = function () {
     if (this.type === 'file' && (this.accept || '').indexOf('image') !== -1) {
       handleFilePick(this);
-      return; // orijinal click'i ASLA çağırma
+      return;
     }
     return _origClick.apply(this, arguments);
   };
 
-  // DOM'daki input'lar için ek güvenlik (addEventListener ile)
   function interceptInput(el) {
     if (el._btc) return;
     el._btc = true;
@@ -363,7 +358,6 @@ class _AppRootState extends State<AppRoot> {
     return status.isGranted;
   }
 
-  // mode: 'camera' → direkt kamera, 'gallery' → seçim dialogu
   Future<String?> _pickImage(String mode) async {
     ImageSource source;
 
@@ -473,8 +467,8 @@ class _AppRootState extends State<AppRoot> {
                   initialUserScripts: _userScripts,
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
-                    // Performans için hybrid composition kapat
-                    useHybridComposition: false,
+                    // ✅ DÜZELTME: true — JS handler güvenilir çalışır
+                    useHybridComposition: true,
                     mediaPlaybackRequiresUserGesture: true,
                     allowFileAccessFromFileURLs: false,
                     allowUniversalAccessFromFileURLs: false,
