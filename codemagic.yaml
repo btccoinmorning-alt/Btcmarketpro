@@ -8,7 +8,7 @@ workflows:
       flutter: 3.29.3
       java: 17
       android_signing:
-        - btcmarketpro
+        - btcmarketpro_keystore
 
     triggering:
       events:
@@ -71,17 +71,29 @@ workflows:
       - name: local.properties Ayarla
         script: |
           VERSION_CODE=$((2000 + BUILD_NUMBER))
-          echo "flutter.sdk=$FLUTTER_ROOT" > $CM_BUILD_DIR/android/local.properties
-          echo "flutter.versionCode=$VERSION_CODE" >> $CM_BUILD_DIR/android/local.properties
+          echo "flutter.sdk=$FLUTTER_ROOT"              > $CM_BUILD_DIR/android/local.properties
+          echo "flutter.versionCode=$VERSION_CODE"     >> $CM_BUILD_DIR/android/local.properties
           echo "flutter.versionName=1.3.$BUILD_NUMBER" >> $CM_BUILD_DIR/android/local.properties
-          echo "sdk.dir=$ANDROID_SDK_ROOT" >> $CM_BUILD_DIR/android/local.properties
+          echo "sdk.dir=$ANDROID_SDK_ROOT"             >> $CM_BUILD_DIR/android/local.properties
           cat $CM_BUILD_DIR/android/local.properties
 
-      - name: İmza Kontrolü
+      - name: İmza Kontrolü ve key.properties Oluştur
         script: |
           echo "Keystore path: $CM_KEYSTORE_PATH"
           echo "Key alias: $CM_KEY_ALIAS"
-          ls -la "$CM_KEYSTORE_PATH" || echo "HATA: Keystore bulunamadı!"
+          ls -la "$CM_KEYSTORE_PATH" || { echo "HATA: Keystore bulunamadı!"; exit 1; }
+
+          keytool -list -v \
+            -keystore "$CM_KEYSTORE_PATH" \
+            -storepass "$CM_KEYSTORE_PASSWORD" 2>&1 | grep SHA1
+
+          cat > $CM_BUILD_DIR/android/key.properties << KEYEOF
+          storePassword=$CM_KEYSTORE_PASSWORD
+          keyPassword=$CM_KEY_PASSWORD
+          keyAlias=$CM_KEY_ALIAS
+          storeFile=$CM_KEYSTORE_PATH
+          KEYEOF
+          echo "✓ key.properties oluşturuldu"
 
       - name: AAB ve APK Derle
         script: |
