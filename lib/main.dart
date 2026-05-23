@@ -56,8 +56,10 @@ bool _isExternalUrl(String url) {
   return true;
 }
 
-const String _webRtcBlockScript = r'''
+// WebRTC engelleme + file input intercept scripti
+const String _initScript = r'''
 (function () {
+  // WebRTC'yi kapat
   ['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection',
    'RTCIceCandidate','RTCSessionDescription'].forEach(function (k) {
     try { window[k] = undefined; } catch (e) {}
@@ -75,6 +77,47 @@ const String _webRtcBlockScript = r'''
       }, configurable: false
     });
   } catch (e) {}
+
+  // File input tıklamalarını yakala
+  window._pendingFileInput = null;
+
+  window._setPickedFile = function(base64Data, filename, mimeType) {
+    if (!window._pendingFileInput) return;
+    try {
+      var byteStr = atob(base64Data);
+      var ab = new ArrayBuffer(byteStr.length);
+      var ia = new Uint8Array(ab);
+      for (var i = 0; i < byteStr.length; i++) {
+        ia[i] = byteStr.charCodeAt(i);
+      }
+      var blob = new Blob([ab], { type: mimeType });
+      var file = new File([blob], filename, { type: mimeType });
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      window._pendingFileInput.files = dt.files;
+      window._pendingFileInput.dispatchEvent(new Event('change', { bubbles: true }));
+      window._pendingFileInput.dispatchEvent(new Event('input', { bubbles: true }));
+      window._pendingFileInput = null;
+    } catch (err) {
+      console.error('_setPickedFile error:', err);
+    }
+  };
+
+  document.addEventListener('click', function(e) {
+    var target = e.target;
+    // En yakın input[type=file] elementini bul
+    while (target && target !== document) {
+      if (target.tagName === 'INPUT' && target.type === 'file') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        window._pendingFileInput = target;
+        var capture = target.getAttribute('capture') || '';
+        window.flutter_inappwebview.callHandler('openFilePicker', capture);
+        return;
+      }
+      target = target.parentElement;
+    }
+  }, true);
 })();
 ''';
 
@@ -123,7 +166,7 @@ class AppRoot extends StatefulWidget {
 }
 
 class _AppRootState extends State<AppRoot> {
-  InAppWebViewController? _controller;
+  InAppWebViewController? _webController;
   bool _showSplash = true;
   bool _hasError = false;
   bool _hasInternet = true;
@@ -177,16 +220,16 @@ class _AppRootState extends State<AppRoot> {
       final response = await request.close();
       if (response.statusCode != 200) return;
       final body = await response.transform(utf8.decoder).join();
-      final json = jsonDecode(body) as Map<String, dynamic>;
-      if (json['success'] != true) return;
-      if ((json['new_count'] as int? ?? 0) == 0) return;
-      final items = json['items'] as List<dynamic>? ?? [];
+      final data = jsonDecode(body) as Map<String, dynamic>;
+      if (data['success'] != true) return;
+      if ((data['new_count'] as int? ?? 0) == 0) return;
+      final items = data['items'] as List<dynamic>? ?? [];
       if (items.isEmpty) return;
       final item = items.first as Map<String, dynamic>;
       final label = item['label'] as String? ?? '🔔 BTCMarketPro';
       final title = item['title'] as String? ?? '';
       if (title.isNotEmpty) await _showNotification(label, title);
-      _lastChecked = json['checked_at'] as int? ??
+      _lastChecked = data['checked_at'] as int? ??
           DateTime.now().millisecondsSinceEpoch ~/ 1000;
     } catch (_) {}
   }
@@ -197,12 +240,12 @@ class _AppRootState extends State<AppRoot> {
       _showSplash = true;
       _pollingStarted = false;
     });
-    await _controller?.reload();
+    await _webController?.reload();
   }
 
   Future<bool> _onWillPop() async {
-    if (_controller != null && await _controller!.canGoBack()) {
-      await _controller!.goBack();
+    if (_webController != null && await _webController!.canGoBack()) {
+      await _webController!.goBack();
       return false;
     }
     return _showExitDialog();
@@ -213,13 +256,15 @@ class _AppRootState extends State<AppRoot> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0D1F3C),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Exit App',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Exit App',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
         content: const Text(
-            'Are you sure you want to exit BTCMarketPro?',
-            style: TextStyle(color: Colors.white70)),
+          'Are you sure you want to exit BTCMarketPro?',
+          style: TextStyle(color: Colors.white70),
+        ),
         actionsAlignment: MainAxisAlignment.spaceEvenly,
         actions: [
           TextButton(
@@ -232,7 +277,8 @@ class _AppRootState extends State<AppRoot> {
               backgroundColor: const Color(0xFF1A6FFF),
               foregroundColor: Colors.white,
               shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8)),
+                borderRadius: BorderRadius.circular(8),
+              ),
             ),
             child: const Text('Yes'),
           ),
@@ -242,7 +288,6 @@ class _AppRootState extends State<AppRoot> {
     return result ?? false;
   }
 
-  // ✅ FIX: Kamera izni doğru şekilde isteniyor
   Future<bool> _requestCameraPermission() async {
     var status = await Permission.camera.status;
     if (status.isGranted) return true;
@@ -254,19 +299,27 @@ class _AppRootState extends State<AppRoot> {
           builder: (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF0D1F3C),
             shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16)),
-            title: const Text('Kamera İzni Gerekli',
-                style: TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.bold)),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: const Text(
+              'Kamera İzni Gerekli',
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             content: const Text(
-                'Kamera erişimi kalıcı olarak reddedildi. Ayarlar\'dan etkinleştirin.',
-                style: TextStyle(color: Colors.white70)),
+              "Kamera erişimi kalıcı olarak reddedildi. Ayarlar'dan etkinleştirin.",
+              style: TextStyle(color: Colors.white70),
+            ),
             actionsAlignment: MainAxisAlignment.spaceEvenly,
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('İptal',
-                    style: TextStyle(color: Colors.white54)),
+                child: const Text(
+                  'İptal',
+                  style: TextStyle(color: Colors.white54),
+                ),
               ),
               ElevatedButton(
                 onPressed: () {
@@ -277,7 +330,8 @@ class _AppRootState extends State<AppRoot> {
                   backgroundColor: const Color(0xFF1A6FFF),
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8)),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                 ),
                 child: const Text('Ayarları Aç'),
               ),
@@ -293,52 +347,54 @@ class _AppRootState extends State<AppRoot> {
   }
 
   Future<bool> _requestStoragePermission() async {
-    if (Platform.isAndroid) {
-      final sdkInt = await _getAndroidSdkInt();
-      if (sdkInt >= 33) {
-        var status = await Permission.photos.status;
-        if (status.isGranted) return true;
-        status = await Permission.photos.request();
-        return status.isGranted;
-      } else {
-        var status = await Permission.storage.status;
-        if (status.isGranted) return true;
-        status = await Permission.storage.request();
-        return status.isGranted;
-      }
-    }
-    return true;
-  }
-
-  Future<int> _getAndroidSdkInt() async {
+    if (!Platform.isAndroid) return true;
     try {
-      final result =
-          await _permChannel.invokeMethod<int>('getAndroidSdkInt');
-      return result ?? 30;
+      final sdkInt =
+          await _permChannel.invokeMethod<int>('getAndroidSdkInt') ?? 30;
+      if (sdkInt >= 33) {
+        var s = await Permission.photos.status;
+        if (s.isGranted) return true;
+        s = await Permission.photos.request();
+        return s.isGranted;
+      } else {
+        var s = await Permission.storage.status;
+        if (s.isGranted) return true;
+        s = await Permission.storage.request();
+        return s.isGranted;
+      }
     } catch (_) {
-      return 30;
+      return true;
     }
   }
 
-  // ✅ NATIVE FILE CHOOSER — kamera ve galeri seçimi
-  Future<List<Uri>?> _handleFileChooser(
+  // Resmi base64 olarak al ve WebView'e enjekte et
+  Future<void> _handleOpenFilePicker(
+    List<dynamic> args,
     InAppWebViewController controller,
-    FileChooserParams params,
   ) async {
-    final isCameraCapture = params.isCaptureEnabled == true;
+    final capture = args.isNotEmpty ? args[0].toString() : '';
+    final isCameraCapture =
+        capture == 'camera' || capture == 'environment' || capture == 'user';
+
     ImageSource? source;
 
     if (isCameraCapture) {
       final granted = await _requestCameraPermission();
-      if (!granted) return [];
+      if (!granted) {
+        await controller.evaluateJavascript(
+          source: 'window._pendingFileInput = null;',
+        );
+        return;
+      }
       source = ImageSource.camera;
     } else {
-      if (!mounted) return [];
+      if (!mounted) return;
       source = await showModalBottomSheet<ImageSource>(
         context: context,
         backgroundColor: const Color(0xFF0D1F3C),
         shape: const RoundedRectangleBorder(
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
         builder: (ctx) => SafeArea(
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 12),
@@ -350,21 +406,30 @@ class _AppRootState extends State<AppRoot> {
                   height: 4,
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                      color: Colors.white24,
-                      borderRadius: BorderRadius.circular(2)),
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
                 ListTile(
-                  leading: const Icon(Icons.camera_alt_rounded,
-                      color: Color(0xFF1A6FFF)),
-                  title: const Text('Kamera',
-                      style: TextStyle(color: Colors.white)),
+                  leading: const Icon(
+                    Icons.camera_alt_rounded,
+                    color: Color(0xFF1A6FFF),
+                  ),
+                  title: const Text(
+                    'Kamera',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () => Navigator.pop(ctx, ImageSource.camera),
                 ),
                 ListTile(
-                  leading: const Icon(Icons.photo_library_rounded,
-                      color: Color(0xFF1A6FFF)),
-                  title: const Text('Galeri',
-                      style: TextStyle(color: Colors.white)),
+                  leading: const Icon(
+                    Icons.photo_library_rounded,
+                    color: Color(0xFF1A6FFF),
+                  ),
+                  title: const Text(
+                    'Galeri',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () => Navigator.pop(ctx, ImageSource.gallery),
                 ),
                 const SizedBox(height: 8),
@@ -374,32 +439,61 @@ class _AppRootState extends State<AppRoot> {
         ),
       );
 
-      if (source == null) return [];
+      if (source == null) {
+        await controller.evaluateJavascript(
+          source: 'window._pendingFileInput = null;',
+        );
+        return;
+      }
 
       if (source == ImageSource.camera) {
         final granted = await _requestCameraPermission();
-        if (!granted) return [];
+        if (!granted) {
+          await controller.evaluateJavascript(
+            source: 'window._pendingFileInput = null;',
+          );
+          return;
+        }
       } else {
         await _requestStoragePermission();
       }
     }
 
     try {
-      final file = await ImagePicker().pickImage(
+      final picked = await ImagePicker().pickImage(
         source: source,
         imageQuality: 85,
         maxWidth: 1920,
         maxHeight: 1920,
       );
-      if (file == null) return [];
-      return [Uri.file(file.path)];
+
+      if (picked == null) {
+        await controller.evaluateJavascript(
+          source: 'window._pendingFileInput = null;',
+        );
+        return;
+      }
+
+      final bytes = await File(picked.path).readAsBytes();
+      final base64Data = base64Encode(bytes);
+      final filename =
+          picked.name.isNotEmpty ? picked.name : 'image.jpg';
+      const mimeType = 'image/jpeg';
+
+      await controller.evaluateJavascript(
+        source:
+            'window._setPickedFile("$base64Data", "$filename", "$mimeType");',
+      );
     } catch (e) {
+      await controller.evaluateJavascript(
+        source: 'window._pendingFileInput = null;',
+      );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
               source == ImageSource.camera
-                  ? 'Kamera açılamadı. Lütfen uygulama izinlerini kontrol edin.'
+                  ? 'Kamera açılamadı. İzinleri kontrol edin.'
                   : 'Galeri açılamadı.',
               style: const TextStyle(color: Colors.white),
             ),
@@ -408,7 +502,6 @@ class _AppRootState extends State<AppRoot> {
           ),
         );
       }
-      return [];
     }
   }
 
@@ -435,7 +528,7 @@ class _AppRootState extends State<AppRoot> {
                   initialUrlRequest: URLRequest(url: WebUri(_homeUrl)),
                   initialUserScripts: [
                     UserScript(
-                      source: _webRtcBlockScript,
+                      source: _initScript,
                       injectionTime:
                           UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
@@ -456,25 +549,30 @@ class _AppRootState extends State<AppRoot> {
                         'Chrome/124.0.0.0 Mobile Safari/537.36',
                   ),
                   onWebViewCreated: (controller) {
-                    _controller = controller;
+                    _webController = controller;
+
+                    // ✅ JS handler: kamera/galeri seçici
+                    controller.addJavaScriptHandler(
+                      handlerName: 'openFilePicker',
+                      callback: (args) {
+                        _handleOpenFilePicker(args, controller);
+                        return null;
+                      },
+                    );
                   },
-                  onShowFileChooser: _handleFileChooser,
-                  // ✅ FIX: Kamera izni gelince GRANT et, diğerlerini reddet
                   onPermissionRequest: (controller, request) async {
-                    final cameraResources = request.resources
+                    final cameraList = request.resources
                         .where((r) => r == PermissionResourceType.CAMERA)
                         .toList();
-
-                    if (cameraResources.isNotEmpty) {
+                    if (cameraList.isNotEmpty) {
                       final granted = await _requestCameraPermission();
                       if (granted) {
                         return PermissionResponse(
-                          resources: cameraResources,
+                          resources: cameraList,
                           action: PermissionResponseAction.GRANT,
                         );
                       }
                     }
-
                     return PermissionResponse(
                       resources: request.resources,
                       action: PermissionResponseAction.DENY,
@@ -487,8 +585,10 @@ class _AppRootState extends State<AppRoot> {
                     if (url.isEmpty) return NavigationActionPolicy.ALLOW;
                     if (_isExternalUrl(url)) {
                       try {
-                        await launchUrl(Uri.parse(url),
-                            mode: LaunchMode.externalApplication);
+                        await launchUrl(
+                          Uri.parse(url),
+                          mode: LaunchMode.externalApplication,
+                        );
                       } catch (_) {}
                       return NavigationActionPolicy.CANCEL;
                     }
@@ -524,8 +624,11 @@ class _AppRootState extends State<AppRoot> {
   }
 }
 
+// ─── Splash ───────────────────────────────────────────────────────────────────
+
 class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -546,34 +649,163 @@ class SplashScreen extends StatelessWidget {
                 ),
               ),
               child: const Center(
-                child: Text('₿',
-                    style: TextStyle(
-                        color: Color(0xFF1A6FFF),
-                        fontSize: 58,
-                        fontWeight: FontWeight.bold)),
+                child: Text(
+                  '₿',
+                  style: TextStyle(
+                    color: Color(0xFF1A6FFF),
+                    fontSize: 58,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 28),
-            const Text('BTCMarketPro',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.5)),
+            const Text(
+              'BTCMarketPro',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.5,
+              ),
+            ),
             const SizedBox(height: 8),
-            const Text('Advanced Crypto Platform',
-                style: TextStyle(
-                    color: Color(0xFF1A6FFF),
-                    fontSize: 13,
-                    letterSpacing: 0.5)),
+            const Text(
+              'Advanced Crypto Platform',
+              style: TextStyle(
+                color: Color(0xFF1A6FFF),
+                fontSize: 13,
+                letterSpacing: 0.5,
+              ),
+            ),
             const SizedBox(height: 40),
             const SizedBox(
               width: 28,
               height: 28,
               child: CircularProgressIndicator(
-                  color: Color(0xFF1A6FFF), strokeWidth: 2.5),
+                color: Color(0xFF1A6FFF),
+                strokeWidth: 2.5,
+              ),
             ),
           ],
         ),
       ),
-    )
+    );
+  }
+}
+
+// ─── No Internet ──────────────────────────────────────────────────────────────
+
+class _NoInternetWidget extends StatelessWidget {
+  final VoidCallback onRetry;
+  const _NoInternetWidget({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF071330),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.wifi_off_rounded,
+                  size: 72, color: Colors.white24),
+              const SizedBox(height: 20),
+              const Text(
+                'No Internet Connection',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Please check your connection and try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white54, fontSize: 14),
+              ),
+              const SizedBox(height: 28),
+              ElevatedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Retry'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1A6FFF),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 12,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Error ────────────────────────────────────────────────────────────────────
+
+class _ErrorWidget extends StatelessWidget {
+  final VoidCallback onRetry;
+  const _ErrorWidget({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF071330),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline_rounded,
+                  size: 72, color: Colors.redAccent),
+              const SizedBox(height: 20),
+              const Text(
+                'Page Failed to Load',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Something went wrong. Please try again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white54, fontSize: 14),
+              ),
+              const SizedBox(height: 28),
+              ElevatedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Retry'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1A6FFF),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 12,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
