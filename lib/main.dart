@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -68,7 +67,7 @@ const String _webRtcBlockScript = r'''
       get: function () {
         return {
           getUserMedia: function () {
-            return Promise.reject(new DOMException('NotAllowed','NotAllowedError'));
+            return Promise.reject(new DOMException('NotAllowed', 'NotAllowedError'));
           },
           enumerateDevices: function () { return Promise.resolve([]); },
           getSupportedConstraints: function () { return {}; }
@@ -76,82 +75,6 @@ const String _webRtcBlockScript = r'''
       }, configurable: false
     });
   } catch (e) {}
-})();
-''';
-
-// AT_DOCUMENT_START'ta inject edilir — prototype override burada
-const String _filePickerEarlyScript = r'''
-(function () {
-  if (window.__flutterFilePickerEarly) return;
-  window.__flutterFilePickerEarly = true;
-
-  var _activeInput = null;
-
-  function _sendToPicker(el) {
-    _activeInput = el;
-    var capture = el.getAttribute('capture') || '';
-    window.flutter_inappwebview.callHandler('openFilePicker', {
-      accept:   el.accept || '',
-      capture:  capture,
-      multiple: el.multiple || false
-    }).then(function (result) {
-      if (!result || !result.base64 || !_activeInput) { _activeInput = null; return; }
-      try {
-        var bin = atob(result.base64);
-        var arr = new Uint8Array(bin.length);
-        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-        var blob = new Blob([arr], { type: result.mimeType || 'image/jpeg' });
-        var file = new File([blob], result.name || 'photo.jpg', { type: result.mimeType || 'image/jpeg' });
-        var dt = new DataTransfer();
-        dt.items.add(file);
-        _activeInput.files = dt.files;
-        _activeInput.dispatchEvent(new Event('change', { bubbles: true }));
-        _activeInput.dispatchEvent(new Event('input',  { bubbles: true }));
-      } catch (e) { console.error('[FP] inject:', e); }
-      _activeInput = null;
-    }).catch(function (e) { console.error('[FP] handler:', e); _activeInput = null; });
-  }
-
-  // Programmatic .click() override — GALLERY/CAMERA butonları bunu tetikler
-  var _origClick = HTMLInputElement.prototype.click;
-  HTMLInputElement.prototype.click = function () {
-    if (this.type === 'file') { _sendToPicker(this); return; }
-    return _origClick.apply(this, arguments);
-  };
-
-  // Kullanıcı direkt tıklama hook'u
-  function _hookInput(el) {
-    if (el.__fpHooked) return;
-    el.__fpHooked = true;
-    el.addEventListener('click', function (e) {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      _sendToPicker(el);
-    }, true);
-  }
-
-  // DOM hazır olunca mevcut input'ları hook'la
-  function _hookAll() {
-    document.querySelectorAll('input[type="file"]').forEach(_hookInput);
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _hookAll);
-  } else {
-    _hookAll();
-  }
-
-  // Sonradan eklenen input'ları izle
-  new MutationObserver(function (mutations) {
-    mutations.forEach(function (m) {
-      m.addedNodes.forEach(function (node) {
-        if (!node || node.nodeType !== 1) return;
-        if (node.tagName === 'INPUT' && node.type === 'file') _hookInput(node);
-        if (node.querySelectorAll)
-          node.querySelectorAll('input[type="file"]').forEach(_hookInput);
-      });
-    });
-  }).observe(document.documentElement, { childList: true, subtree: true });
 })();
 ''';
 
@@ -294,7 +217,8 @@ class _AppRootState extends State<AppRoot> {
             RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Exit App',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-        content: const Text('Are you sure you want to exit BTCMarketPro?',
+        content: const Text(
+            'Are you sure you want to exit BTCMarketPro?',
             style: TextStyle(color: Colors.white70)),
         actionsAlignment: MainAxisAlignment.spaceEvenly,
         actions: [
@@ -318,8 +242,11 @@ class _AppRootState extends State<AppRoot> {
     return result ?? false;
   }
 
+  // ✅ FIX: Kamera izni doğru şekilde isteniyor
   Future<bool> _requestCameraPermission() async {
     var status = await Permission.camera.status;
+    if (status.isGranted) return true;
+
     if (status.isPermanentlyDenied) {
       if (mounted) {
         await showDialog(
@@ -328,17 +255,17 @@ class _AppRootState extends State<AppRoot> {
             backgroundColor: const Color(0xFF0D1F3C),
             shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16)),
-            title: const Text('Camera Permission',
+            title: const Text('Kamera İzni Gerekli',
                 style: TextStyle(
                     color: Colors.white, fontWeight: FontWeight.bold)),
             content: const Text(
-                'Camera access denied. Please enable it in Settings.',
+                'Kamera erişimi kalıcı olarak reddedildi. Ayarlar\'dan etkinleştirin.',
                 style: TextStyle(color: Colors.white70)),
             actionsAlignment: MainAxisAlignment.spaceEvenly,
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Cancel',
+                child: const Text('İptal',
                     style: TextStyle(color: Colors.white54)),
               ),
               ElevatedButton(
@@ -352,7 +279,7 @@ class _AppRootState extends State<AppRoot> {
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8)),
                 ),
-                child: const Text('Open Settings'),
+                child: const Text('Ayarları Aç'),
               ),
             ],
           ),
@@ -360,43 +287,58 @@ class _AppRootState extends State<AppRoot> {
       }
       return false;
     }
-    if (!status.isGranted) {
-      status = await Permission.camera.request();
-    }
+
+    status = await Permission.camera.request();
     return status.isGranted;
   }
 
   Future<bool> _requestStoragePermission() async {
-    if (await Permission.photos.isGranted) return true;
-    if (await Permission.storage.isGranted) return true;
-    final photosStatus = await Permission.photos.request();
-    if (photosStatus.isGranted) return true;
-    final storageStatus = await Permission.storage.request();
-    return storageStatus.isGranted;
+    if (Platform.isAndroid) {
+      final sdkInt = await _getAndroidSdkInt();
+      if (sdkInt >= 33) {
+        var status = await Permission.photos.status;
+        if (status.isGranted) return true;
+        status = await Permission.photos.request();
+        return status.isGranted;
+      } else {
+        var status = await Permission.storage.status;
+        if (status.isGranted) return true;
+        status = await Permission.storage.request();
+        return status.isGranted;
+      }
+    }
+    return true;
   }
 
-  Future<Map<String, dynamic>?> _handleFilePickerRequest(
-      List<dynamic> args) async {
-    final params =
-        args.isNotEmpty ? args[0] as Map<dynamic, dynamic>? : null;
-    final capture = params?['capture']?.toString() ?? '';
-    final isCameraCapture =
-        capture == 'camera' || capture == 'environment' || capture == 'user';
+  Future<int> _getAndroidSdkInt() async {
+    try {
+      final result =
+          await _permChannel.invokeMethod<int>('getAndroidSdkInt');
+      return result ?? 30;
+    } catch (_) {
+      return 30;
+    }
+  }
 
+  // ✅ NATIVE FILE CHOOSER — kamera ve galeri seçimi
+  Future<List<Uri>?> _handleFileChooser(
+    InAppWebViewController controller,
+    FileChooserParams params,
+  ) async {
+    final isCameraCapture = params.isCaptureEnabled == true;
     ImageSource? source;
 
     if (isCameraCapture) {
       final granted = await _requestCameraPermission();
-      if (!granted) return null;
+      if (!granted) return [];
       source = ImageSource.camera;
     } else {
-      if (!mounted) return null;
+      if (!mounted) return [];
       source = await showModalBottomSheet<ImageSource>(
         context: context,
         backgroundColor: const Color(0xFF0D1F3C),
         shape: const RoundedRectangleBorder(
-            borderRadius:
-                BorderRadius.vertical(top: Radius.circular(20))),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
         builder: (ctx) => SafeArea(
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 12),
@@ -432,14 +374,13 @@ class _AppRootState extends State<AppRoot> {
         ),
       );
 
-      if (source == null) return null;
+      if (source == null) return [];
 
       if (source == ImageSource.camera) {
         final granted = await _requestCameraPermission();
-        if (!granted) return null;
+        if (!granted) return [];
       } else {
-        final granted = await _requestStoragePermission();
-        if (!granted) return null;
+        await _requestStoragePermission();
       }
     }
 
@@ -450,18 +391,24 @@ class _AppRootState extends State<AppRoot> {
         maxWidth: 1920,
         maxHeight: 1920,
       );
-      if (file == null) return null;
-      final bytes = await File(file.path).readAsBytes();
-      final base64Str = base64Encode(bytes);
-      final ext = file.path.split('.').last.toLowerCase();
-      final mimeType = ext == 'png' ? 'image/png' : 'image/jpeg';
-      return {
-        'base64': base64Str,
-        'mimeType': mimeType,
-        'name': file.name,
-      };
-    } catch (_) {
-      return null;
+      if (file == null) return [];
+      return [Uri.file(file.path)];
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              source == ImageSource.camera
+                  ? 'Kamera açılamadı. Lütfen uygulama izinlerini kontrol edin.'
+                  : 'Galeri açılamadı.',
+              style: const TextStyle(color: Colors.white),
+            ),
+            backgroundColor: const Color(0xFF0D1F3C),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return [];
     }
   }
 
@@ -485,21 +432,14 @@ class _AppRootState extends State<AppRoot> {
                 _ErrorWidget(onRetry: _reloadPage)
               else
                 InAppWebView(
-                  initialUrlRequest:
-                      URLRequest(url: WebUri(_homeUrl)),
-                  initialUserScripts: UnmodifiableListView([
+                  initialUrlRequest: URLRequest(url: WebUri(_homeUrl)),
+                  initialUserScripts: [
                     UserScript(
                       source: _webRtcBlockScript,
                       injectionTime:
                           UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
-                    // Prototype override — sayfa JS'i çalışmadan önce inject et
-                    UserScript(
-                      source: _filePickerEarlyScript,
-                      injectionTime:
-                          UserScriptInjectionTime.AT_DOCUMENT_START,
-                    ),
-                  ]),
+                  ],
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
                     useHybridComposition: true,
@@ -517,12 +457,24 @@ class _AppRootState extends State<AppRoot> {
                   ),
                   onWebViewCreated: (controller) {
                     _controller = controller;
-                    controller.addJavaScriptHandler(
-                      handlerName: 'openFilePicker',
-                      callback: _handleFilePickerRequest,
-                    );
                   },
+                  onShowFileChooser: _handleFileChooser,
+                  // ✅ FIX: Kamera izni gelince GRANT et, diğerlerini reddet
                   onPermissionRequest: (controller, request) async {
+                    final cameraResources = request.resources
+                        .where((r) => r == PermissionResourceType.CAMERA)
+                        .toList();
+
+                    if (cameraResources.isNotEmpty) {
+                      final granted = await _requestCameraPermission();
+                      if (granted) {
+                        return PermissionResponse(
+                          resources: cameraResources,
+                          action: PermissionResponseAction.GRANT,
+                        );
+                      }
+                    }
+
                     return PermissionResponse(
                       resources: request.resources,
                       action: PermissionResponseAction.DENY,
@@ -544,9 +496,6 @@ class _AppRootState extends State<AppRoot> {
                   },
                   onLoadStop: (controller, url) async {
                     if (!mounted) return;
-                    // Yedek olarak tekrar inject et (SPA navigasyonları için)
-                    await controller.evaluateJavascript(
-                        source: _filePickerEarlyScript);
                     _startForegroundPolling();
                     try {
                       await _permChannel.invokeMethod('setAppReady');
@@ -627,100 +576,4 @@ class SplashScreen extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _NoInternetWidget extends StatelessWidget {
-  final VoidCallback onRetry;
-  const _NoInternetWidget({required this.onRetry});
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: const Color(0xFF071330),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.wifi_off_rounded,
-                  size: 72, color: Colors.white24),
-              const SizedBox(height: 20),
-              const Text('No Internet Connection',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              const Text('Please check your connection and try again.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white54, fontSize: 14)),
-              const SizedBox(height: 28),
-              ElevatedButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Retry'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1A6FFF),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 28, vertical: 12),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorWidget extends StatelessWidget {
-  final VoidCallback onRetry;
-  const _ErrorWidget({required this.onRetry});
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: const Color(0xFF071330),
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline_rounded,
-                  size: 72, color: Colors.redAccent),
-              const SizedBox(height: 20),
-              const Text('Page Failed to Load',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              const Text('Something went wrong. Please try again.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white54, fontSize: 14)),
-              const SizedBox(height: 28),
-              ElevatedButton.icon(
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Retry'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1A6FFF),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 28, vertical: 12),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10)),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
+    )
