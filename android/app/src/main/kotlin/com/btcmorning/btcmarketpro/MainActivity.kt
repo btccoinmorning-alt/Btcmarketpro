@@ -37,6 +37,9 @@ class MainActivity : FlutterActivity() {
                     "checkNotificationPermission" -> {
                         result.success(hasNotificationPermission())
                     }
+                    "getAndroidSdkInt" -> {
+                        result.success(Build.VERSION.SDK_INT)
+                    }
                     else -> result.notImplemented()
                 }
             }
