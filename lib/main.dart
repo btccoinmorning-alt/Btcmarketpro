@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -56,10 +57,8 @@ bool _isExternalUrl(String url) {
   return true;
 }
 
-// WebRTC engelleme + file input intercept scripti
 const String _initScript = r'''
 (function () {
-  // WebRTC'yi kapat
   ['RTCPeerConnection','webkitRTCPeerConnection','mozRTCPeerConnection',
    'RTCIceCandidate','RTCSessionDescription'].forEach(function (k) {
     try { window[k] = undefined; } catch (e) {}
@@ -78,7 +77,6 @@ const String _initScript = r'''
     });
   } catch (e) {}
 
-  // File input tıklamalarını yakala
   window._pendingFileInput = null;
 
   window._setPickedFile = function(base64Data, filename, mimeType) {
@@ -105,7 +103,6 @@ const String _initScript = r'''
 
   document.addEventListener('click', function(e) {
     var target = e.target;
-    // En yakın input[type=file] elementini bul
     while (target && target !== document) {
       if (target.tagName === 'INPUT' && target.type === 'file') {
         e.preventDefault();
@@ -257,14 +254,10 @@ class _AppRootState extends State<AppRoot> {
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF0D1F3C),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
-          'Exit App',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        content: const Text(
-          'Are you sure you want to exit BTCMarketPro?',
-          style: TextStyle(color: Colors.white70),
-        ),
+        title: const Text('Exit App',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        content: const Text('Are you sure you want to exit BTCMarketPro?',
+            style: TextStyle(color: Colors.white70)),
         actionsAlignment: MainAxisAlignment.spaceEvenly,
         actions: [
           TextButton(
@@ -276,9 +269,7 @@ class _AppRootState extends State<AppRoot> {
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF1A6FFF),
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             child: const Text('Yes'),
           ),
@@ -291,35 +282,23 @@ class _AppRootState extends State<AppRoot> {
   Future<bool> _requestCameraPermission() async {
     var status = await Permission.camera.status;
     if (status.isGranted) return true;
-
     if (status.isPermanentlyDenied) {
       if (mounted) {
         await showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF0D1F3C),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            title: const Text(
-              'Kamera İzni Gerekli',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text('Kamera İzni Gerekli',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             content: const Text(
-              "Kamera erişimi kalıcı olarak reddedildi. Ayarlar'dan etkinleştirin.",
-              style: TextStyle(color: Colors.white70),
-            ),
+                "Kamera erişimi kalıcı olarak reddedildi. Ayarlar'dan etkinleştirin.",
+                style: TextStyle(color: Colors.white70)),
             actionsAlignment: MainAxisAlignment.spaceEvenly,
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text(
-                  'İptal',
-                  style: TextStyle(color: Colors.white54),
-                ),
+                child: const Text('İptal', style: TextStyle(color: Colors.white54)),
               ),
               ElevatedButton(
                 onPressed: () {
@@ -329,9 +308,7 @@ class _AppRootState extends State<AppRoot> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1A6FFF),
                   foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
                 child: const Text('Ayarları Aç'),
               ),
@@ -341,33 +318,25 @@ class _AppRootState extends State<AppRoot> {
       }
       return false;
     }
-
     status = await Permission.camera.request();
     return status.isGranted;
   }
 
-  Future<bool> _requestStoragePermission() async {
-    if (!Platform.isAndroid) return true;
+  Future<void> _requestStoragePermission() async {
+    if (!Platform.isAndroid) return;
     try {
       final sdkInt =
           await _permChannel.invokeMethod<int>('getAndroidSdkInt') ?? 30;
       if (sdkInt >= 33) {
-        var s = await Permission.photos.status;
-        if (s.isGranted) return true;
-        s = await Permission.photos.request();
-        return s.isGranted;
+        final s = await Permission.photos.status;
+        if (!s.isGranted) await Permission.photos.request();
       } else {
-        var s = await Permission.storage.status;
-        if (s.isGranted) return true;
-        s = await Permission.storage.request();
-        return s.isGranted;
+        final s = await Permission.storage.status;
+        if (!s.isGranted) await Permission.storage.request();
       }
-    } catch (_) {
-      return true;
-    }
+    } catch (_) {}
   }
 
-  // Resmi base64 olarak al ve WebView'e enjekte et
   Future<void> _handleOpenFilePicker(
     List<dynamic> args,
     InAppWebViewController controller,
@@ -381,9 +350,7 @@ class _AppRootState extends State<AppRoot> {
     if (isCameraCapture) {
       final granted = await _requestCameraPermission();
       if (!granted) {
-        await controller.evaluateJavascript(
-          source: 'window._pendingFileInput = null;',
-        );
+        await controller.evaluateJavascript(source: 'window._pendingFileInput = null;');
         return;
       }
       source = ImageSource.camera;
@@ -393,8 +360,7 @@ class _AppRootState extends State<AppRoot> {
         context: context,
         backgroundColor: const Color(0xFF0D1F3C),
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
         builder: (ctx) => SafeArea(
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 12),
@@ -406,30 +372,17 @@ class _AppRootState extends State<AppRoot> {
                   height: 4,
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: Colors.white24,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2)),
                 ),
                 ListTile(
-                  leading: const Icon(
-                    Icons.camera_alt_rounded,
-                    color: Color(0xFF1A6FFF),
-                  ),
-                  title: const Text(
-                    'Kamera',
-                    style: TextStyle(color: Colors.white),
-                  ),
+                  leading: const Icon(Icons.camera_alt_rounded, color: Color(0xFF1A6FFF)),
+                  title: const Text('Kamera', style: TextStyle(color: Colors.white)),
                   onTap: () => Navigator.pop(ctx, ImageSource.camera),
                 ),
                 ListTile(
-                  leading: const Icon(
-                    Icons.photo_library_rounded,
-                    color: Color(0xFF1A6FFF),
-                  ),
-                  title: const Text(
-                    'Galeri',
-                    style: TextStyle(color: Colors.white),
-                  ),
+                  leading: const Icon(Icons.photo_library_rounded, color: Color(0xFF1A6FFF)),
+                  title: const Text('Galeri', style: TextStyle(color: Colors.white)),
                   onTap: () => Navigator.pop(ctx, ImageSource.gallery),
                 ),
                 const SizedBox(height: 8),
@@ -440,18 +393,14 @@ class _AppRootState extends State<AppRoot> {
       );
 
       if (source == null) {
-        await controller.evaluateJavascript(
-          source: 'window._pendingFileInput = null;',
-        );
+        await controller.evaluateJavascript(source: 'window._pendingFileInput = null;');
         return;
       }
 
       if (source == ImageSource.camera) {
         final granted = await _requestCameraPermission();
         if (!granted) {
-          await controller.evaluateJavascript(
-            source: 'window._pendingFileInput = null;',
-          );
+          await controller.evaluateJavascript(source: 'window._pendingFileInput = null;');
           return;
         }
       } else {
@@ -466,28 +415,19 @@ class _AppRootState extends State<AppRoot> {
         maxWidth: 1920,
         maxHeight: 1920,
       );
-
       if (picked == null) {
-        await controller.evaluateJavascript(
-          source: 'window._pendingFileInput = null;',
-        );
+        await controller.evaluateJavascript(source: 'window._pendingFileInput = null;');
         return;
       }
-
       final bytes = await File(picked.path).readAsBytes();
       final base64Data = base64Encode(bytes);
-      final filename =
-          picked.name.isNotEmpty ? picked.name : 'image.jpg';
+      final filename = picked.name.isNotEmpty ? picked.name : 'image.jpg';
       const mimeType = 'image/jpeg';
-
       await controller.evaluateJavascript(
-        source:
-            'window._setPickedFile("$base64Data", "$filename", "$mimeType");',
+        source: 'window._setPickedFile("$base64Data","$filename","$mimeType");',
       );
-    } catch (e) {
-      await controller.evaluateJavascript(
-        source: 'window._pendingFileInput = null;',
-      );
+    } catch (_) {
+      await controller.evaluateJavascript(source: 'window._pendingFileInput = null;');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -526,13 +466,12 @@ class _AppRootState extends State<AppRoot> {
               else
                 InAppWebView(
                   initialUrlRequest: URLRequest(url: WebUri(_homeUrl)),
-                  initialUserScripts: [
+                  initialUserScripts: UnmodifiableListView([
                     UserScript(
                       source: _initScript,
-                      injectionTime:
-                          UserScriptInjectionTime.AT_DOCUMENT_START,
+                      injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
                     ),
-                  ],
+                  ]),
                   initialSettings: InAppWebViewSettings(
                     javaScriptEnabled: true,
                     useHybridComposition: true,
@@ -550,8 +489,6 @@ class _AppRootState extends State<AppRoot> {
                   ),
                   onWebViewCreated: (controller) {
                     _webController = controller;
-
-                    // ✅ JS handler: kamera/galeri seçici
                     controller.addJavaScriptHandler(
                       handlerName: 'openFilePicker',
                       callback: (args) {
@@ -578,17 +515,13 @@ class _AppRootState extends State<AppRoot> {
                       action: PermissionResponseAction.DENY,
                     );
                   },
-                  shouldOverrideUrlLoading:
-                      (controller, navigationAction) async {
-                    final url =
-                        navigationAction.request.url?.toString() ?? '';
+                  shouldOverrideUrlLoading: (controller, navigationAction) async {
+                    final url = navigationAction.request.url?.toString() ?? '';
                     if (url.isEmpty) return NavigationActionPolicy.ALLOW;
                     if (_isExternalUrl(url)) {
                       try {
-                        await launchUrl(
-                          Uri.parse(url),
-                          mode: LaunchMode.externalApplication,
-                        );
+                        await launchUrl(Uri.parse(url),
+                            mode: LaunchMode.externalApplication);
                       } catch (_) {}
                       return NavigationActionPolicy.CANCEL;
                     }
@@ -624,8 +557,6 @@ class _AppRootState extends State<AppRoot> {
   }
 }
 
-// ─── Splash ───────────────────────────────────────────────────────────────────
-
 class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
 
@@ -649,43 +580,32 @@ class SplashScreen extends StatelessWidget {
                 ),
               ),
               child: const Center(
-                child: Text(
-                  '₿',
-                  style: TextStyle(
-                    color: Color(0xFF1A6FFF),
-                    fontSize: 58,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                child: Text('₿',
+                    style: TextStyle(
+                        color: Color(0xFF1A6FFF),
+                        fontSize: 58,
+                        fontWeight: FontWeight.bold)),
               ),
             ),
             const SizedBox(height: 28),
-            const Text(
-              'BTCMarketPro',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.5,
-              ),
-            ),
+            const Text('BTCMarketPro',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.5)),
             const SizedBox(height: 8),
-            const Text(
-              'Advanced Crypto Platform',
-              style: TextStyle(
-                color: Color(0xFF1A6FFF),
-                fontSize: 13,
-                letterSpacing: 0.5,
-              ),
-            ),
+            const Text('Advanced Crypto Platform',
+                style: TextStyle(
+                    color: Color(0xFF1A6FFF),
+                    fontSize: 13,
+                    letterSpacing: 0.5)),
             const SizedBox(height: 40),
             const SizedBox(
               width: 28,
               height: 28,
               child: CircularProgressIndicator(
-                color: Color(0xFF1A6FFF),
-                strokeWidth: 2.5,
-              ),
+                  color: Color(0xFF1A6FFF), strokeWidth: 2.5),
             ),
           ],
         ),
@@ -693,8 +613,6 @@ class SplashScreen extends StatelessWidget {
     );
   }
 }
-
-// ─── No Internet ──────────────────────────────────────────────────────────────
 
 class _NoInternetWidget extends StatelessWidget {
   final VoidCallback onRetry;
@@ -710,23 +628,17 @@ class _NoInternetWidget extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.wifi_off_rounded,
-                  size: 72, color: Colors.white24),
+              const Icon(Icons.wifi_off_rounded, size: 72, color: Colors.white24),
               const SizedBox(height: 20),
-              const Text(
-                'No Internet Connection',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              const Text('No Internet Connection',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text(
-                'Please check your connection and try again.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white54, fontSize: 14),
-              ),
+              const Text('Please check your connection and try again.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white54, fontSize: 14)),
               const SizedBox(height: 28),
               ElevatedButton.icon(
                 onPressed: onRetry,
@@ -735,13 +647,9 @@ class _NoInternetWidget extends StatelessWidget {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1A6FFF),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 28,
-                    vertical: 12,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ],
@@ -751,8 +659,6 @@ class _NoInternetWidget extends StatelessWidget {
     );
   }
 }
-
-// ─── Error ────────────────────────────────────────────────────────────────────
 
 class _ErrorWidget extends StatelessWidget {
   final VoidCallback onRetry;
@@ -771,20 +677,15 @@ class _ErrorWidget extends StatelessWidget {
               const Icon(Icons.error_outline_rounded,
                   size: 72, color: Colors.redAccent),
               const SizedBox(height: 20),
-              const Text(
-                'Page Failed to Load',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              const Text('Page Failed to Load',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text(
-                'Something went wrong. Please try again.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white54, fontSize: 14),
-              ),
+              const Text('Something went wrong. Please try again.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white54, fontSize: 14)),
               const SizedBox(height: 28),
               ElevatedButton.icon(
                 onPressed: onRetry,
@@ -793,13 +694,9 @@ class _ErrorWidget extends StatelessWidget {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1A6FFF),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 28,
-                    vertical: 12,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                      borderRadius: BorderRadius.circular(10)),
                 ),
               ),
             ],
