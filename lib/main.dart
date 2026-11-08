@@ -328,8 +328,6 @@ class _AppRootState extends State<AppRoot> {
       final sdkInt =
           await _permChannel.invokeMethod<int>('getAndroidSdkInt') ?? 30;
       if (sdkInt >= 33) {
-        final s = await Permission.photos.status;
-        if (!s.isGranted) await Permission.photos.request();
       } else {
         final s = await Permission.storage.status;
         if (!s.isGranted) await Permission.storage.request();
