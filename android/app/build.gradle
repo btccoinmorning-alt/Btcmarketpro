@@ -46,7 +46,7 @@ android {
 
     defaultConfig {
         applicationId "com.btcmorning.btcmarketpro"
-        minSdk 21
+        minSdk 24
         targetSdk 36
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
