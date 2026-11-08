@@ -102,6 +102,8 @@ workflows:
           mkdir -p android/gradle/wrapper
           cp gradle/wrapper/gradle-wrapper.properties android/gradle/wrapper/gradle-wrapper.properties
           grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
+          chmod +x android/gradlew 2>/dev/null
+          for i in 1 2 3 4 5; do (cd android && ./gradlew --version) && break; echo "Gradle indirme tekrar $i"; sleep 20; done
           VERSION_CODE=$((3000 + BUILD_NUMBER))
 
           flutter build appbundle \
