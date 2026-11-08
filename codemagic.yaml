@@ -99,6 +99,9 @@ workflows:
         script: |
           cd $CM_BUILD_DIR
           mkdir -p output
+          mkdir -p android/gradle/wrapper
+          cp gradle/wrapper/gradle-wrapper.properties android/gradle/wrapper/gradle-wrapper.properties
+          grep distributionUrl android/gradle/wrapper/gradle-wrapper.properties
           VERSION_CODE=$((3000 + BUILD_NUMBER))
 
           flutter build appbundle \
